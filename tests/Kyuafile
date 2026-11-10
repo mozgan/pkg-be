@@ -1,0 +1,3 @@
+syntax(2)
+test_suite("pkg-be")
+atf_test_program{name="be_util_test"}

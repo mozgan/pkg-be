@@ -1,0 +1,263 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
+.\"
+.Dd November 10, 2026
+.Dt PKG-BE 8
+.Os
+.Sh NAME
+.Nm pkg-be
+.Nd create a ZFS boot environment before pkg operations
+.Sh SYNOPSIS
+.Nm pkg be
+.Cm list
+.Op Fl av
+.Nm pkg be
+.Cm show
+.Ar be
+.Nm pkg be
+.Cm diff
+.Ar be
+.Op Ar be2
+.Nm pkg be
+.Cm rollback
+.Op Fl ty
+.Ar be
+.Nm pkg be
+.Cm prune
+.Op Fl n
+.Pp
+Enable the plugin in
+.Pa /usr/local/etc/pkg.conf :
+.Bd -literal -offset indent
+PKG_ENABLE_PLUGINS = true;
+PLUGINS = [ "pkg-be" ];
+.Ed
+.Sh DESCRIPTION
+.Nm
+is a
+.Xr pkg 8
+plugin.
+Before
+.Nm pkg
+applies an upgrade (and, optionally, an install, delete or autoremove),
+it creates a boot environment with
+.Xr libbe 3 .
+If the change breaks the system, the previous state can be booted with
+.Xr bectl 8 .
+.Pp
+The boot environment is named
+.Sm off
+.Ar PREFIX No - Ar YYYYmmdd No - Ar HHMMSS ,
+.Sm on
+with a
+.Sm off
+.No - Ar N
+.Sm on
+suffix if that name already exists.
+.Pp
+After creating it,
+.Nm
+destroys the oldest boot environments whose names match
+.Ar PREFIX
+so that at most
+.Va BE_KEEP
+of them remain.
+Boot environments with other names are never touched.
+The active and the next-boot environments are never destroyed.
+.Pp
+Nothing is done when
+.Nm pkg
+runs with
+.Fl n
+(dry run), with
+.Fl r Ar rootdir
+(another system is changed), with
+.Fl c Ar chroot ,
+inside a jail
+.Pq including Nm pkg Fl j ,
+or when the root file system is not on ZFS boot environments.
+.Pp
+The newest boot environment of
+.Nm
+is never destroyed by the retention rules.
+.Sh COMMANDS
+The plugin adds a
+.Cm be
+subcommand to
+.Xr pkg 8 .
+.Bl -tag -width rollback
+.It Cm list Op Fl av
+List boot environments created by
+.Nm
+with their creation time, operation, number of changes and the
+changes themselves.
+The ACTIVE column uses the
+.Xr bectl 8
+flags: N is active now, R is active on reboot.
+.Bl -tag -width Ds
+.It Fl a
+List all boot environments, not only those of
+.Nm .
+.It Fl v
+Do not shorten the CHANGES column.
+.El
+.It Cm show Ar be
+Show the details of one boot environment, one change per line.
+.It Cm diff Ar be Op Ar be2
+Compare the installed packages of
+.Ar be
+with those of the running system, or with those of
+.Ar be2 .
+Boot environments other than the running one are mounted temporarily.
+Requires root.
+.It Cm rollback Oo Fl ty Oc Ar be
+Activate
+.Ar be
+so that it is booted on the next reboot.
+Requires root.
+.Bl -tag -width Ds
+.It Fl t
+Activate for the next boot only.
+.It Fl y
+Do not ask for confirmation.
+.El
+.It Cm prune Op Fl n
+Apply the
+.Va BE_KEEP
+and
+.Va BE_KEEP_DAYS
+retention now.
+With
+.Fl n ,
+only print what would be destroyed.
+Requires root unless
+.Fl n
+is given.
+.El
+.Sh CONFIGURATION
+Settings are read from
+.Pa pkg-be.conf
+in the
+.Va PLUGINS_CONF_DIR
+directory of
+.Xr pkg.conf 5 :
+.Bl -tag -width BE_ENABLED
+.It Va BE_ENABLED
+Boolean.
+Default
+.Dq true .
+.It Va BE_PREFIX
+Name prefix.
+Default
+.Dq pkg-be .
+.It Va BE_KEEP
+Number of boot environments to keep.
+0 keeps all.
+Default 5.
+.It Va BE_KEEP_DAYS
+Also destroy boot environments older than this many days, judged by the
+time in their name.
+0 disables this rule.
+Default 0.
+.It Va BE_MIN_FREE
+Warn when the pool has less than this percentage of free space.
+0 disables the warning.
+Default 10.
+.It Va BE_SYSLOG
+Boolean.
+Also log creation, destruction and errors with
+.Xr syslog 3
+(facility user).
+Default
+.Dq true .
+.It Va BE_HOOKS
+Comma or space separated list of operations that create a boot
+environment:
+.Cm upgrade ,
+.Cm install ,
+.Cm deinstall
+.Pq or Cm delete ,
+.Cm autoremove ,
+.Cm all
+or
+.Cm none .
+Default
+.Dq upgrade .
+.El
+.Sh PROPERTIES
+Each boot environment gets these ZFS user properties:
+.Bl -tag -width pkg-be:packages
+.It Va pkg-be:op
+Operation that triggered it, for example
+.Dq upgrade .
+.It Va pkg-be:packages
+Planned changes:
+.Dq +name-ver
+(install),
+.Dq -name-ver
+(delete),
+.Dq name old->new
+(upgrade).
+Long lists end with
+.Dq ... (+N more) .
+.It Va pkg-be:count
+Number of planned changes.
+.It Va pkg-be:version
+.Nm
+version.
+.El
+.Sh FILES
+.Bl -tag -width "/usr/local/etc/pkg/pkg-be.conf" -compact
+.It Pa /usr/local/lib/pkg/pkg-be.so
+the plugin
+.It Pa /usr/local/etc/pkg/pkg-be.conf
+configuration
+.El
+.Sh EXIT STATUS
+.Nm pkg be
+exits 0 on success and >0 on error, using the values from
+.Xr sysexits 3 .
+.Sh EXAMPLES
+Create a boot environment before upgrades and installs, keep ten:
+.Bd -literal -offset indent
+BE_HOOKS = "upgrade, install";
+BE_KEEP = 10;
+.Ed
+.Pp
+Find the boot environment taken before a bad upgrade, check what has
+changed since, and boot back into it:
+.Bd -literal -offset indent
+pkg be list
+pkg be diff pkg-be-20261110-123807
+pkg be rollback pkg-be-20261110-123807
+shutdown -r now
+.Ed
+.Sh SEE ALSO
+.Xr libbe 3 ,
+.Xr sysexits 3 ,
+.Xr syslog 3 ,
+.Xr pkg.conf 5 ,
+.Xr bectl 8 ,
+.Xr pkg 8
+.Sh AUTHORS
+.An Mehmet Ozgan Aq Mt mozgan@gmail.com
+.Sh CAVEATS
+.Xr pkg 8
+ignores the plugin return value: if the boot environment cannot be
+created, the operation still proceeds.
+Plugins are disabled in
+.Nm pkg-static .
+With
+.Fl r Ar rootdir ,
+.Nm pkg
+loads plugins and
+.Pa pkg.conf
+from
+.Ar rootdir ;
+.Nm
+only skips if it is installed and enabled there.
+Data on datasets outside the boot environment, such as
+.Pa /home ,
+is not part of the boot environment and is not rolled back.

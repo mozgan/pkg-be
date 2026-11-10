@@ -1,0 +1,14 @@
+# pkg-be plugin configuration. Copy to pkg-be.conf.
+BE_ENABLED = true;
+BE_PREFIX = "pkg-be";
+# Keep the newest N pkg-be boot environments (0 = keep all).
+BE_KEEP = 5;
+# Operations that create a BE: upgrade, install, deinstall (delete),
+# autoremove, all, none. Comma separated.
+BE_HOOKS = "upgrade";
+# Also destroy pkg-be BEs older than N days (0 = off). The newest is kept.
+BE_KEEP_DAYS = 0;
+# Warn when the pool has less than N percent free (0 = off).
+BE_MIN_FREE = 10;
+# Also log to syslog (facility user).
+BE_SYSLOG = true;

@@ -1,0 +1,17 @@
+[
+{ type: install
+  message: <<EOM
+To enable pkg-be, add to %%PREFIX%%/etc/pkg.conf:
+
+  PKG_ENABLE_PLUGINS = true;
+  PLUGINS = [ "pkg-be" ];
+
+Settings: %%PREFIX%%/etc/pkg/pkg-be.conf (see pkg-be(8)).
+A boot environment is then created before every "pkg upgrade".
+List them with "pkg be list".
+
+pkg-be needs the root file system on ZFS boot environments.
+It does nothing in jails, with "pkg -r/-c", or with pkg-static.
+EOM
+}
+]

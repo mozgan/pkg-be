@@ -1,0 +1,7 @@
+pkg-be is a pkg(8) plugin that creates a ZFS boot environment before
+pkg upgrades (and, optionally, installs, deletes and autoremoves).
+If an update breaks the system, the previous state can be booted again.
+
+It keeps only the newest boot environments (by count and/or age),
+records which packages changed as ZFS user properties, and adds a
+"pkg be" command to list, compare and roll back boot environments.

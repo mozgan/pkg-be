@@ -1,0 +1,142 @@
+# CI for pkg-be. GitHub has no FreeBSD runners, so every job boots a
+# FreeBSD VM on an Ubuntu runner with vmactions/freebsd-vm.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"  # weekly: catch pkg(8) API changes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build + unit tests (FreeBSD ${{ matrix.release }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["15.1", "14.5"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          prepare: |
+            env ASSUME_ALWAYS_YES=yes pkg install -y pkg atf
+          run: |
+            set -e
+            freebsd-version
+            pkg -v
+            make
+            make test
+
+  lint:
+    name: clang-tidy + mandoc + scan-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          prepare: |
+            env ASSUME_ALWAYS_YES=yes pkg install -y pkg llvm19
+          run: |
+            set -e
+            make lint
+            scan-build19 --status-bugs make
+
+  integration:
+    # Needs a ZFS root with boot environments: use the -zfs image.
+    # pkg 2.9.0 ("latest") ignores plugin .conf files (pkg bug), so the
+    # required job uses pkg from "quarterly"; "latest" is allowed to fail.
+    name: integration test (FreeBSD 15.1, ZFS root, pkg ${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    env:
+      PKG_BRANCH: ${{ matrix.branch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [quarterly, latest]
+    # "latest" may break with new pkg releases; do not fail the run.
+    continue-on-error: ${{ matrix.branch == 'latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1-zfs"
+          envs: "PKG_BRANCH"
+          prepare: |
+            set -e
+            export ASSUME_ALWAYS_YES=yes
+            # Use only our repository definition, so the image's own repo
+            # files cannot override the branch.
+            mkdir -p /usr/local/etc/pkg/ci-repos
+            cat > /usr/local/etc/pkg/ci-repos/FreeBSD.conf <<EOF
+            FreeBSD-ports: {
+              url: "pkg+https://pkg.FreeBSD.org/\${ABI}/${PKG_BRANCH}",
+              mirror_type: "srv",
+              signature_type: "fingerprints",
+              fingerprints: "/usr/share/keys/pkg",
+              enabled: yes
+            }
+            EOF
+            echo 'REPOS_DIR = [ "/usr/local/etc/pkg/ci-repos/" ];' \
+                >> /usr/local/etc/pkg.conf
+            pkg -N 2>/dev/null || pkg bootstrap -f -y
+            pkg -vv | sed -n '/^Repositories:/,$p'
+            pkg update -f
+            # -f also allows a downgrade (e.g. 2.9.0 -> 2.8.x).
+            pkg install -fy pkg
+            pkg install -y pkgconf
+            want=$(pkg rquery %v pkg)
+            have=$(pkg -v)
+            echo "pkg: installed ${have}, ${PKG_BRANCH} has ${want}"
+            [ "$have" = "$want" ] || { echo "pkg is not from ${PKG_BRANCH}"; exit 1; }
+          run: |
+            set -e
+            [ "$(id -u)" -eq 0 ] || { echo "not root in the VM"; exit 1; }
+            bectl list
+            make
+            make install
+            cat >> /usr/local/etc/pkg.conf <<'CONF'
+            PKG_ENABLE_PLUGINS = true;
+            PLUGINS = [ "pkg-be" ];
+            CONF
+            pkg plugins
+            # Known pkg 2.9.0 bug: plugin names are dropped, so pkg-be.conf
+            # is not read. On "latest" report it and skip; once pkg is
+            # fixed this check stops matching and the test runs again.
+            if [ "$PKG_BRANCH" = latest ] && pkg plugins | grep -q '^(null) '; then
+              echo "::warning::pkg $(pkg -v) drops plugin names and ignores pkg-be.conf (known pkg bug); integration test skipped on latest"
+              exit 0
+            fi
+            rc=0
+            sh tests/integration.sh || rc=$?
+            # 77 = skipped (e.g. image without boot environments).
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 77 ]
+
+  pkg-main:
+    # libpkg's plugin API is undocumented: build against pkg's main branch
+    # as an early warning. Allowed to fail.
+    name: build against pkg main
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          prepare: |
+            env ASSUME_ALWAYS_YES=yes pkg install -y pkg git atf
+          run: |
+            set -e
+            git clone --depth 1 https://github.com/freebsd/pkg.git /tmp/pkg
+            cd /tmp/pkg && ./configure && make -j4 && make install
+            cd "$GITHUB_WORKSPACE"
+            make
+            make test

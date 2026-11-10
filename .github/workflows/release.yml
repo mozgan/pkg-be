@@ -1,0 +1,52 @@
+# CD for pkg-be: on a version tag (vX.Y.Z), create a GitHub release and
+# print the distinfo lines the FreeBSD port needs for that tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Port distinfo for this tag
+        id: distinfo
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          # The port uses USE_GITHUB; ports fetch GitHub's tag tarball.
+          url="https://codeload.github.com/${REPO}/tar.gz/${TAG}?dummy=/"
+          curl -fsSL -o dist.tar.gz "$url"
+          owner=${REPO%%/*}
+          name=${REPO##*/}
+          file="${owner}-${name}-${TAG}_GH0.tar.gz"
+          {
+            echo "TIMESTAMP = $(date +%s)"
+            echo "SHA256 (${file}) = $(sha256sum dist.tar.gz | cut -d' ' -f1)"
+            echo "SIZE (${file}) = $(stat -c %s dist.tar.gz)"
+          } > distinfo
+          cat distinfo
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "pkg-be ${TAG}"
+            echo
+            echo "distinfo for port/sysutils/pkg-be:"
+            echo '```'
+            cat distinfo
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" distinfo --title "pkg-be ${TAG}" \
+              --notes-file notes.md --verify-tag

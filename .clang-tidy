@@ -1,0 +1,21 @@
+# clang-tidy configuration for pkg-be.
+#
+# Disabled checks conflict with FreeBSD style(9) or do not apply:
+# - bugprone-assignment-in-if-condition: style(9) prescribes
+#   "if ((p = f()) == NULL)".
+# - bugprone-multi-level-implicit-pointer-conversion: wants casts on
+#   malloc/calloc/free; style(9): "Routines returning void * should not
+#   have their return values cast".
+# - clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling:
+#   suggests C11 Annex K (snprintf_s, memcpy_s), which FreeBSD libc does not
+#   provide; all calls are already bounded.
+# - bugprone-easily-swappable-parameters: API-design advice; qsort(3)
+#   comparators and pkg(8) entry points have fixed signatures.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -bugprone-easily-swappable-parameters
+WarningsAsErrors: '*'

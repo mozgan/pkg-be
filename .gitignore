@@ -1,0 +1,10 @@
+*.o
+*.so
+*.pico
+*.gz
+*.full
+*.debug
+tests/be_util_test
+tests/.depend*
+.depend*
+*.core
