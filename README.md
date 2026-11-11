@@ -74,8 +74,8 @@ for every plugin, and pkg looks for `/usr/local/etc/pkg/(null).conf`, so
     pkg: (null): this pkg version does not keep plugin names;
     pkg-be.conf is ignored and defaults are used
 
-pkg 2.8.x ("quarterly") is not affected. A fix for pkg has been prepared
-(store the fields as `sb_t` values in `struct pkg_plugin`).
+pkg 2.8.x ("quarterly") is not affected. The fix is proposed upstream in
+[freebsd/pkg#2778](https://github.com/freebsd/pkg/pull/2778).
 
 ## CI/CD
 
