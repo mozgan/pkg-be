@@ -3,7 +3,7 @@
 pkg(8) plugin: creates a ZFS boot environment (**be**) before `pkg upgrade` and keeps
 only the newest `BE_KEEP` of them.
 
-Status: v0.1.0.
+Status: v0.1.1.
 
 ## Build / install (FreeBSD)
 

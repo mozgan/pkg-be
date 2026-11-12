@@ -14,7 +14,7 @@
 #include "be_compat.h"
 
 #define PLUGIN_NAME	"pkg-be"
-#define PLUGIN_VERSION	"0.1.0"
+#define PLUGIN_VERSION	"0.1.1"
 #define PROP_NS		"pkg-be:"
 #define ZFS_CMD		"/sbin/zfs"
 #ifndef PKG_CMD
