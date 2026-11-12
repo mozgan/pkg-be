@@ -64,19 +64,6 @@ and that system boots from ZFS. In these cases pkg-be creates nothing:
 | `BE_ENABLED = false`, or the operation is not in `BE_HOOKS` | Normal operation.                                                                                       | Turned off by configuration.                                                                                                                                                                                                     |
 | Nothing to do (e.g. system up to date)                      | No jobs.                                                                                                | pkg only calls the hook when there is work.                                                                                                                                                                                      |
 
-## Known issue: pkg 2.9.0 ignores pkg-be.conf
-
-In pkg 2.9.0 (the "latest" package branch, November 2026)
-`pkg_plugin_set()` drops its value. `pkg plugins` then shows `(null)`
-for every plugin, and pkg looks for `/usr/local/etc/pkg/(null).conf`, so
-`pkg-be.conf` is not read. pkg-be still works with its defaults and warns:
-
-    pkg: (null): this pkg version does not keep plugin names;
-    pkg-be.conf is ignored and defaults are used
-
-pkg 2.8.x ("quarterly") is not affected. The fix is proposed upstream in
-[freebsd/pkg#2778](https://github.com/freebsd/pkg/pull/2778).
-
 ## CI/CD
 
 GitHub Actions (`.github/workflows/`), each job in a FreeBSD VM

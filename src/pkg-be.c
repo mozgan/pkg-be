@@ -262,7 +262,8 @@ pkgbe_prune(libbe_handle_t *be, const struct pkgbe_conf *c, bool dry)
 		}
 		pkgbe_log(c, false, "destroying old boot environment: %s",
 		    doomed[i]);
-		if (be_destroy(be, doomed[i], 0) != BE_ERR_SUCCESS)
+		if (be_destroy(be, doomed[i],
+		    BE_DESTROY_AUTOORIGIN) != BE_ERR_SUCCESS)
 			pkgbe_log(c, true, "could not destroy %s: %s",
 			    doomed[i], libbe_error_description(be));
 	}
@@ -493,8 +494,9 @@ pkg_plugin_init(struct pkg_plugin *p)
 	pkg_plugin_parse(p);
 
 	/*
-	 * pkg 2.9.0 drops the values given to pkg_plugin_set(), and it finds
-	 * the plugin's .conf file by that name, so pkg-be.conf is not read.
+	 * pkg 2.9.0 (fixed in 2.9.1) drops the values given to
+	 * pkg_plugin_set(), and it finds the plugin's .conf file by that
+	 * name, so pkg-be.conf is not read.
 	 */
 	if (pkg_plugin_get(p, PKG_PLUGIN_NAME) == NULL)
 		pkg_plugin_error(p, "this pkg version does not keep plugin "

@@ -23,7 +23,7 @@ fail=0
 bectl list >/dev/null 2>&1 || { echo "SKIP: no ZFS boot environments"; exit 77; }
 if pkg plugins | grep -q '^(null) '; then
 	echo "FAIL: pkg $(pkg -v) does not keep plugin names, so pkg-be.conf"
-	echo "      is not read (pkg bug, seen in 2.9.0). Use pkg 2.8.x."
+	echo "      is not read (pkg 2.9.0 bug). Use pkg 2.8.x or 2.9.1+."
 	exit 1
 fi
 pkg plugins | grep -q '^pkg-be ' || { echo "FAIL: pkg-be plugin not loaded"; exit 1; }
