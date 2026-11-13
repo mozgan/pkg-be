@@ -582,7 +582,7 @@ pkgbe_parse_duration(const char *s, time_t *out)
 	}
 	switch (*p) {
 	case 'w':
-		mult = 7 * 86400;
+		mult = (uintmax_t)7 * 86400;
 		break;
 	case 'd':
 		mult = 86400;
