@@ -5,6 +5,8 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
+#include <stdint.h>
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,16 +130,18 @@ pkgbe_select_prune(const char *const *names, size_t n, const char *prefix,
 {
 	const char **ours;
 	size_t cnt = 0, nout = 0, keep;
-	time_t t, limit = 0;
-	bool by_count, by_age;
+	time_t t, limit = 0, young = 0;
+	bool by_count, by_age, known;
 
 	if (pol == NULL || names == NULL || out == NULL || n == 0)
 		return (0);
-	if (pol->keep <= 0 && pol->keep_days <= 0)
+	if (pol->keep <= 0 && pol->keep_age <= 0)
 		return (0);
 	keep = pol->keep > 0 ? (size_t)pol->keep : 0;
-	if (pol->keep_days > 0)
-		limit = pol->now - (time_t)pol->keep_days * 86400;
+	if (pol->keep_age > 0)
+		limit = pol->now - pol->keep_age;
+	if (pol->min_age > 0)
+		young = pol->now - pol->min_age;
 	if ((ours = calloc(n, sizeof(*ours))) == NULL)
 		return (0);
 	for (size_t i = 0; i < n; i++)
@@ -147,10 +151,13 @@ pkgbe_select_prune(const char *const *names, size_t n, const char *prefix,
 
 	/* Oldest first; never the newest (i == cnt - 1). */
 	for (size_t i = 0; i + 1 < cnt; i++) {
+		known = pkgbe_name_time(ours[i], prefix, &t) == 0;
 		by_count = keep > 0 && i + keep < cnt;
-		by_age = pol->keep_days > 0 &&
-		    pkgbe_name_time(ours[i], prefix, &t) == 0 && t < limit;
+		by_age = pol->keep_age > 0 && known && t < limit;
 		if (!by_count && !by_age)
+			continue;
+		/* Too young (or age unknown): keep it. */
+		if (pol->min_age > 0 && (!known || t > young))
 			continue;
 		if (same(ours[i], active) || same(ours[i], nextboot))
 			continue;
@@ -551,4 +558,81 @@ pkgbe_is_slash(const char *path)
 	while (*path == '/')
 		path++;
 	return (*path == '\0');
+}
+
+/* ---- durations and repository filter ---- */
+
+int
+pkgbe_parse_duration(const char *s, time_t *out)
+{
+	/* At most ~68 years: fits any time_t, and now - age cannot overflow. */
+	uintmax_t n = 0, mult = 1, max = (uintmax_t)INT32_MAX;
+	const char *p;
+
+	if (s == NULL || out == NULL)
+		return (-1);
+	while (isspace((unsigned char)*s))
+		s++;
+	if (!isdigit((unsigned char)*s))
+		return (-1);	/* empty, sign or junk */
+	for (p = s; isdigit((unsigned char)*p); p++) {
+		if (n > (max - (uintmax_t)(*p - '0')) / 10)
+			return (-1);
+		n = n * 10 + (uintmax_t)(*p - '0');
+	}
+	switch (*p) {
+	case 'w':
+		mult = 7 * 86400;
+		break;
+	case 'd':
+		mult = 86400;
+		break;
+	case 'h':
+		mult = 3600;
+		break;
+	case 'm':
+		mult = 60;
+		break;
+	case 's':
+		break;
+	default:
+		p--;	/* no suffix */
+		break;
+	}
+	p++;
+	while (isspace((unsigned char)*p))
+		p++;
+	if (*p != '\0' || n > max / mult)
+		return (-1);
+	*out = (time_t)(n * mult);
+	return (0);
+}
+
+bool
+pkgbe_repo_listed(const char *filter, const char *repo)
+{
+	const char *s = filter;
+	size_t len;
+	bool empty = true;
+
+	if (s == NULL)
+		return (true);
+	for (;;) {
+		while (*s == ',' || isspace((unsigned char)*s))
+			s++;
+		if (*s == '\0')
+			break;
+		for (len = 0; s[len] != '\0' && s[len] != ',' &&
+		    !isspace((unsigned char)s[len]); len++)
+			;
+		empty = false;
+		if (len == 5 && strncmp(s, "local", 5) == 0) {
+			if (repo == NULL || *repo == '\0')
+				return (true);
+		} else if (repo != NULL && strlen(repo) == len &&
+		    strncmp(s, repo, len) == 0)
+			return (true);
+		s += len;
+	}
+	return (empty);
 }

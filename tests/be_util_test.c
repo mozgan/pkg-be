@@ -5,6 +5,8 @@
  */
 
 #include <atf-c.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -125,7 +127,7 @@ ATF_TC_BODY(prune_never_foreign, tc)
 	const char *out[3];
 
 	ATF_CHECK_EQ(0, pkgbe_select_prune(names, 3, "pkg-be",
-	    &(struct pkgbe_policy){ .keep = 1, .keep_days = 1, .now = T0 },
+	    &(struct pkgbe_policy){ .keep = 1, .keep_age = 86400, .now = T0 },
 	    NULL, NULL, out));
 }
 
@@ -156,7 +158,7 @@ ATF_TC_BODY(prune_unlimited, tc)
 	};
 	const char *out[2];
 
-	struct pkgbe_policy p0 = { 0 }, pneg = { .keep = -1, .keep_days = -1 },
+	struct pkgbe_policy p0 = { 0 }, pneg = { .keep = -1, .keep_age = -1 },
 	    p5 = { .keep = 5 };
 
 	ATF_CHECK_EQ(0, pkgbe_select_prune(names, 2, "pkg-be", &p0,
@@ -198,7 +200,7 @@ ATF_TC_BODY(prune_keep_days, tc)
 		"pkg-be-20261110-120000",	/* newest */
 	};
 	const char *out[4];
-	struct pkgbe_policy p = { .keep_days = 7, .now = T0 };
+	struct pkgbe_policy p = { .keep_age = 7 * 86400, .now = T0 };
 	size_t n;
 
 	utc();
@@ -221,7 +223,7 @@ ATF_TC_BODY(prune_keep_days_never_newest, tc)
 		"pkg-be-20250101-000000", "pkg-be-20250102-000000",
 	};
 	const char *out[2];
-	struct pkgbe_policy p = { .keep_days = 1, .now = T0 };
+	struct pkgbe_policy p = { .keep_age = 86400, .now = T0 };
 
 	utc();
 	ATF_REQUIRE_EQ(1, pkgbe_select_prune(names, 2, "pkg-be", &p, NULL,
@@ -415,8 +417,8 @@ rd(size_t n, const char *const *v)
 	return (pkgbe_argv_rootdir((int)n, __DECONST(char *const *, v)));
 }
 
-#define RD(...)	rd(sizeof((const char *const[]){ __VA_ARGS__ }) / \
-	sizeof(const char *), (const char *const[]){ __VA_ARGS__ })
+#define RD(...)	rd(sizeof((const char *const[]) { __VA_ARGS__ }) / \
+	sizeof(const char *), (const char *const[]) { __VA_ARGS__ })
 
 ATF_TC_WITHOUT_HEAD(argv_rootdir);
 ATF_TC_BODY(argv_rootdir, tc)
@@ -487,8 +489,316 @@ ATF_TC_BODY(hooks_parse_invalid, tc)
 	ATF_CHECK_EQ(-1, pkgbe_parse_hooks("upgrade", NULL));
 }
 
+/* ---- pkgbe_parse_duration ---- */
+
+ATF_TC_WITHOUT_HEAD(duration_valid);
+ATF_TC_BODY(duration_valid, tc)
+{
+	static const struct {
+		const char *in;
+		time_t want;
+	} t[] = {
+		{ "0", 0 },
+		{ "0d", 0 },
+		{ "30", 30 },			/* no suffix = seconds */
+		{ "30s", 30 },
+		{ "5m", 300 },
+		{ "12h", 43200 },
+		{ "30d", 2592000 },
+		{ "2w", 1209600 },
+		{ " 7d ", 604800 },		/* blanks around are fine */
+		{ "\t1h\n", 3600 },
+		{ "007d", 604800 },		/* leading zeros */
+		{ "2147483647", 2147483647 },	/* upper limit, exact */
+		{ "24855d", (time_t)24855 * 86400 },
+		{ "3550w", (time_t)3550 * 604800 },
+	};
+	time_t got;
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+		got = -42;
+		ATF_CHECK_MSG(pkgbe_parse_duration(t[i].in, &got) == 0,
+		    "\"%s\": rejected, should be accepted as %jd s",
+		    t[i].in, (intmax_t)t[i].want);
+		ATF_CHECK_MSG(got == t[i].want,
+		    "\"%s\": got %jd s, want %jd s", t[i].in,
+		    (intmax_t)got, (intmax_t)t[i].want);
+	}
+}
+
+ATF_TC_WITHOUT_HEAD(duration_invalid);
+ATF_TC_BODY(duration_invalid, tc)
+{
+	/* Each must fail and leave the output untouched. */
+	static const struct {
+		const char *in;
+		const char *why;
+	} t[] = {
+		{ "", "empty" },
+		{ "   ", "only blanks" },
+		{ "-1", "negative" },
+		{ "-0", "sign" },
+		{ "+5", "sign" },
+		{ "d", "no number" },
+		{ "5x", "unknown suffix" },
+		{ "5D", "suffixes are lower case" },
+		{ "5dd", "two suffixes" },
+		{ "5 d", "blank inside" },
+		{ "1.5h", "fraction" },
+		{ "1h30m", "compound" },
+		{ "0x10", "hex" },
+		{ "5d junk", "trailing text" },
+		{ "2147483648", "2^31 s, one too many" },
+		{ "24856d", "over ~68 years" },
+		{ "99999999999999999999999999", "overflows uintmax_t" },
+		{ "18446744073709551616w", "overflow before suffix" },
+	};
+	time_t got;
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+		got = -42;
+		ATF_CHECK_MSG(pkgbe_parse_duration(t[i].in, &got) == -1,
+		    "\"%s\" (%s): accepted as %jd s, should be rejected",
+		    t[i].in, t[i].why, (intmax_t)got);
+		ATF_CHECK_MSG(got == -42,
+		    "\"%s\": output changed to %jd on error", t[i].in,
+		    (intmax_t)got);
+	}
+	ATF_CHECK_EQ_MSG(-1, pkgbe_parse_duration(NULL, &got),
+	    "NULL string must be rejected");
+	ATF_CHECK_EQ_MSG(-1, pkgbe_parse_duration("1d", NULL),
+	    "NULL output must be rejected, not crash");
+}
+
+/* ---- pkgbe_repo_listed ---- */
+
+ATF_TC_WITHOUT_HEAD(repo_listed);
+ATF_TC_BODY(repo_listed, tc)
+{
+	static const struct {
+		const char *filter, *repo;
+		bool want;
+		const char *why;
+	} t[] = {
+		{ NULL, "FreeBSD", true, "no filter: everything" },
+		{ "", "FreeBSD", true, "empty filter: everything" },
+		{ " , \t", NULL, true, "only separators = empty" },
+		{ "FreeBSD-base", "FreeBSD-base", true, "exact" },
+		{ "FreeBSD-base", "FreeBSD", false, "filter longer than repo" },
+		{ "FreeBSD", "FreeBSD-base", false, "no prefix match" },
+		{ "freebsd", "FreeBSD", false, "case-sensitive" },
+		{ "a,b", "b", true, "comma list" },
+		{ "a b", "b", true, "space list" },
+		{ " a ,\tb ", "b", true, "mixed blanks" },
+		{ "a,,b", "b", true, "empty item ignored" },
+		{ "a,b", "c", false, "not listed" },
+		{ "FreeBSD-base", NULL, false, "pkg add'ed, no local" },
+		{ "local", NULL, true, "local = no repository" },
+		{ "local", "", true, "local = empty repository" },
+		{ "local", "FreeBSD", false, "local is not a repo" },
+		{ "locale", NULL, false, "only the exact word local" },
+		{ "loca", NULL, false, "only the exact word local" },
+		{ "local", "local", false, "repo named local" },
+		{ "FreeBSD-base,local", NULL, true, "local within a list" },
+	};
+	bool got;
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+		got = pkgbe_repo_listed(t[i].filter, t[i].repo);
+		ATF_CHECK_MSG(got == t[i].want,
+		    "filter \"%s\", repo \"%s\" (%s): got %s, want %s",
+		    t[i].filter ? t[i].filter : "(null)",
+		    t[i].repo ? t[i].repo : "(null)", t[i].why,
+		    got ? "match" : "no match",
+		    t[i].want ? "match" : "no match");
+	}
+}
+
+/* ---- pkgbe_select_prune with BE_MIN_AGE / BE_KEEP_AGE ---- */
+
+/* Print what was chosen, for failure messages. */
+static const char *
+chosen(const char **out, size_t n)
+{
+	static char buf[512];
+
+	buf[0] = '\0';
+	for (size_t i = 0; i < n; i++) {
+		strlcat(buf, i ? ", " : "", sizeof(buf));
+		strlcat(buf, out[i], sizeof(buf));
+	}
+	return (n ? buf : "(nothing)");
+}
+
+ATF_TC_WITHOUT_HEAD(prune_min_age_protects_young);
+ATF_TC_BODY(prune_min_age_protects_young, tc)
+{
+	/* T0 = 2026-11-10 12:38:07 UTC */
+	const char *names[] = {
+		"pkg-be-20261107-120000",	/* ~3 days: may go */
+		"pkg-be-20261110-003807",	/* 12 h: too young */
+		"pkg-be-20261110-113807",	/* 1 h, newest */
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .keep = 1, .min_age = 86400, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "BE_KEEP=1 + BE_MIN_AGE=1d: want only the "
+	    "3-day-old BE, got %zu: %s", n, chosen(out, n));
+	if (n == 1)
+		ATF_CHECK_STREQ("pkg-be-20261107-120000", out[0]);
+
+	/* Without BE_MIN_AGE the 12 h one goes too. */
+	p.min_age = 0;
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(2, n, "BE_KEEP=1 alone: want 2, got %zu: %s", n,
+	    chosen(out, n));
+}
+
+ATF_TC_WITHOUT_HEAD(prune_min_age_boundary);
+ATF_TC_BODY(prune_min_age_boundary, tc)
+{
+	/* Exactly 1 h old is no longer "younger than 1 h". */
+	const char *names[] = {
+		"pkg-be-20261110-113807",	/* exactly 3600 s */
+		"pkg-be-20261110-113808",	/* 3599 s */
+		"pkg-be-20261110-123807",	/* newest */
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .keep = 1, .min_age = 3600, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "want only the BE aged exactly 3600 s, "
+	    "got %zu: %s", n, chosen(out, n));
+	if (n == 1)
+		ATF_CHECK_STREQ("pkg-be-20261110-113807", out[0]);
+}
+
+ATF_TC_WITHOUT_HEAD(prune_keep_age_boundary);
+ATF_TC_BODY(prune_keep_age_boundary, tc)
+{
+	/* Exactly 1 d old is not "older than 1 d". */
+	const char *names[] = {
+		"pkg-be-20261109-123806",	/* 1 d + 1 s: goes */
+		"pkg-be-20261109-123807",	/* exactly 1 d: stays */
+		"pkg-be-20261110-123807",	/* newest */
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .keep_age = 86400, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "BE_KEEP_AGE=1d: want only the 1 d + 1 s "
+	    "BE, got %zu: %s", n, chosen(out, n));
+	if (n == 1)
+		ATF_CHECK_STREQ("pkg-be-20261109-123806", out[0]);
+}
+
+ATF_TC_WITHOUT_HEAD(prune_min_age_wins_over_keep_age);
+ATF_TC_BODY(prune_min_age_wins_over_keep_age, tc)
+{
+	/* Conflicting config: KEEP_AGE=1d, MIN_AGE=7d. Keeping wins. */
+	const char *names[] = {
+		"pkg-be-20261020-000000",	/* 21 d: goes */
+		"pkg-be-20261107-000000",	/* 3 d: old, but too young */
+		"pkg-be-20261110-000000",
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .keep_age = 86400, .min_age = 7 * 86400,
+	    .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "want only the 21-day-old BE, got %zu: %s",
+	    n, chosen(out, n));
+}
+
+ATF_TC_WITHOUT_HEAD(prune_min_age_alone_prunes_nothing);
+ATF_TC_BODY(prune_min_age_alone_prunes_nothing, tc)
+{
+	/* BE_MIN_AGE only protects; it is not a pruning rule. */
+	const char *names[] = {
+		"pkg-be-20200101-000000", "pkg-be-20210101-000000",
+		"pkg-be-20261110-000000",
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .min_age = 60, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(0, n, "BE_MIN_AGE without BE_KEEP/BE_KEEP_AGE "
+	    "must not destroy, got %zu: %s", n, chosen(out, n));
+}
+
+ATF_TC_WITHOUT_HEAD(prune_future_be_kept);
+ATF_TC_BODY(prune_future_be_kept, tc)
+{
+	/*
+	 * Clock went back after a BE was made: its name lies in the
+	 * future. BE_MIN_AGE keeps it; BE_KEEP_AGE never selects it.
+	 */
+	const char *names[] = {
+		"pkg-be-20261101-000000",
+		"pkg-be-20271231-000000",	/* "future", sorts newest */
+		"pkg-be-20271231-000001",
+	};
+	const char *out[3];
+	struct pkgbe_policy p = { .keep = 1, .min_age = 3600, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "want only the 2026-11-01 BE, got %zu: %s",
+	    n, chosen(out, n));
+
+	p = (struct pkgbe_policy){ .keep_age = 86400, .now = T0 };
+	n = pkgbe_select_prune(names, 3, "pkg-be", &p, NULL, NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "KEEP_AGE: future BEs are not old; got "
+	    "%zu: %s", n, chosen(out, n));
+}
+
+ATF_TC_WITHOUT_HEAD(prune_min_age_with_active);
+ATF_TC_BODY(prune_min_age_with_active, tc)
+{
+	/* Both protections at once: nothing may be chosen twice or wrongly. */
+	const char *names[] = {
+		"pkg-be-20261101-000000",	/* active */
+		"pkg-be-20261102-000000",	/* goes */
+		"pkg-be-20261110-120000",	/* young */
+		"pkg-be-20261110-123000",	/* newest */
+	};
+	const char *out[4];
+	struct pkgbe_policy p = { .keep = 1, .min_age = 3600, .now = T0 };
+	size_t n;
+
+	utc();
+	n = pkgbe_select_prune(names, 4, "pkg-be", &p,
+	    "pkg-be-20261101-000000", NULL, out);
+	ATF_CHECK_EQ_MSG(1, n, "want only 20261102, got %zu: %s", n,
+	    chosen(out, n));
+	if (n == 1)
+		ATF_CHECK_STREQ("pkg-be-20261102-000000", out[0]);
+}
+
 ATF_TP_ADD_TCS(tp)
 {
+	ATF_TP_ADD_TC(tp, duration_valid);
+	ATF_TP_ADD_TC(tp, duration_invalid);
+	ATF_TP_ADD_TC(tp, repo_listed);
+	ATF_TP_ADD_TC(tp, prune_min_age_protects_young);
+	ATF_TP_ADD_TC(tp, prune_min_age_boundary);
+	ATF_TP_ADD_TC(tp, prune_keep_age_boundary);
+	ATF_TP_ADD_TC(tp, prune_min_age_wins_over_keep_age);
+	ATF_TP_ADD_TC(tp, prune_min_age_alone_prunes_nothing);
+	ATF_TP_ADD_TC(tp, prune_future_be_kept);
+	ATF_TP_ADD_TC(tp, prune_min_age_with_active);
 	ATF_TP_ADD_TC(tp, prune_keep_days);
 	ATF_TP_ADD_TC(tp, prune_keep_days_never_newest);
 	ATF_TP_ADD_TC(tp, name_time);

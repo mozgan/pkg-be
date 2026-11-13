@@ -25,7 +25,9 @@ Scope: the pure functions in `src/be_util.c` (no libbe/libpkg calls).
 | `pkgbe_make_name` | name, `-N` suffix, truncation, bad arguments |
 | `pkgbe_is_ours` | only our BEs match; similar prefixes do not |
 | `pkgbe_name_time` | time parsed back from a name |
-| `pkgbe_select_prune` | BE_KEEP, BE_KEEP_DAYS, both; newest kept; active/next-boot protected; `-10` after `-9` |
+| `pkgbe_select_prune` | BE_KEEP, BE_KEEP_AGE, both; newest kept; active/next-boot protected; `-10` after `-9`; BE_MIN_AGE protects young BEs, exact boundaries (1 h, 1 d), MIN_AGE over KEEP_AGE, MIN_AGE alone prunes nothing, future-dated BEs |
+| `pkgbe_parse_duration` | s/m/h/d/w, no suffix, blanks, leading zeros, 2^31-1 limit; rejects empty, signs, fractions, compound, upper case, overflow; output unchanged on error |
+| `pkgbe_repo_listed` | empty filter, lists with odd separators, no prefix match, case-sensitive, `local` = no repository |
 | `pkgbe_parse_hooks` | BE_HOOKS words, case, `all`/`none`, errors |
 | `pkgbe_join` | metadata list, `... (+N more)` truncation |
 | `pkgbe_parse_props` | `zfs get -Hp` output for `pkg be list` |
@@ -69,7 +71,14 @@ Steps:
 What it checks: creation; metadata; BE_KEEP; foreign BEs kept;
 BE_ENABLED=false; `-n`; BE_HOOKS install/upgrade/deinstall; `pkg be
 list/show/diff/prune`; `pkg -r DIR` skipped; jail skipped; syslog;
-BE_KEEP_DAYS; BE_MIN_FREE warning; `pkg be diff A B`.
+BE_KEEP_DAYS; BE_MIN_FREE warning; `pkg be diff A B`; v0.2.0:
+pkg.conf `SYSLOG=false`, syslog ident; BE_REPOSITORIES (match, near
+misses, wrong case, `local`, delete uses the installed package's
+repository); BE_KEEP_AGE; BE_MIN_AGE (and the same case without it);
+invalid durations create but never prune, `pkg be prune` exits 78;
+unquoted durations are dropped by pkg.
+
+Failed checks print what was expected and what happened.
 
 ## 3. System tests (root, by hand)
 

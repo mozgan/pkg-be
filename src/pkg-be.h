@@ -9,12 +9,13 @@
 #define PKG_BE_H
 
 #include <stdbool.h>
+#include <time.h>
 
 #include <pkg.h>
 #include "be_compat.h"
 
 #define PLUGIN_NAME	"pkg-be"
-#define PLUGIN_VERSION	"0.1.1"
+#define PLUGIN_VERSION	"0.2.0"
 #define PROP_NS		"pkg-be:"
 #define ZFS_CMD		"/sbin/zfs"
 #ifndef PKG_CMD
@@ -25,12 +26,24 @@ struct pkgbe_conf {
 	bool		 enabled;
 	const char	*prefix;
 	int		 keep;
-	int		 keep_days;
+	time_t		 keep_age;	/* seconds, 0 = off */
+	time_t		 min_age;	/* seconds, 0 = off */
+	const char	*bad;		/* invalid duration key, NULL if ok */
+	const char	*bad_val;
 	int		 min_free;	/* warn below this % free in the pool */
-	bool		 syslog;
+	bool		 syslog;	/* BE_SYSLOG and pkg.conf SYSLOG */
 	const char	*hooks;
+	const char	*repos;		/* BE_REPOSITORIES, "" = all */
 };
 
+/* Entry points looked up by pkg(8) with dlsym(3). */
+int	pkg_plugin_init(struct pkg_plugin *);
+int	pkg_plugin_shutdown(struct pkg_plugin *);
+int	pkg_register_cmd_count(void);
+int	pkg_register_cmd(int, const char **, const char **,
+	    int (**)(int, char **));
+
+extern char **environ;
 extern struct pkg_plugin *pkgbe_self;
 
 void	pkgbe_conf_read(struct pkgbe_conf *);
@@ -38,7 +51,7 @@ void	pkgbe_conf_read(struct pkgbe_conf *);
 /* posix_spawn argv (no shell); capture stdout into *out if non-NULL. */
 int	pkgbe_run(char *const argv[], char **out);
 
-/* Apply BE_KEEP / BE_KEEP_DAYS. dry: only print. Returns count. */
+/* Apply BE_KEEP / BE_KEEP_AGE / BE_MIN_AGE. dry: only print. Returns count. */
 size_t	pkgbe_prune(libbe_handle_t *, const struct pkgbe_conf *, bool dry);
 
 /* Message to pkg's output and, if enabled, syslog(3). */

@@ -25,20 +25,23 @@ bool	pkgbe_is_ours(const char *name, const char *prefix);
 /* Creation time encoded in one of our names (local time). 0 or -1. */
 int	pkgbe_name_time(const char *name, const char *prefix, time_t *t);
 
-/* Retention policy. 0 disables a rule. */
+/* Retention policy. 0 (or less) disables a rule. */
 struct pkgbe_policy {
 	int	keep;		/* keep at most this many (newest) */
-	int	keep_days;	/* destroy if older than this many days */
-	time_t	now;		/* reference time for keep_days */
+	time_t	keep_age;	/* destroy if older than this (seconds) */
+	time_t	min_age;	/* never destroy if younger than this (s) */
+	time_t	now;		/* reference time for the ages */
 };
 
 /*
  * Choose BEs to destroy. Only our names (pkgbe_is_ours) are considered.
  * A BE is chosen if it is not among the newest `keep`, or if it is older
- * than `keep_days`. The newest of ours is never chosen. `active` and
- * `nextboot` (may be NULL) are never chosen and are not replaced, so more
- * than `keep` may remain. Pointers to chosen names are stored in `out`
- * (capacity n). Returns how many were chosen. `names` is not modified.
+ * than `keep_age`. The newest of ours is never chosen. A BE younger than
+ * `min_age` (or whose age is unknown, when min_age > 0) is never chosen.
+ * `active` and `nextboot` (may be NULL) are never chosen and are not
+ * replaced, so more than `keep` may remain. Pointers to chosen names are
+ * stored in `out` (capacity n). Returns how many were chosen. `names` is
+ * not modified.
  */
 size_t	pkgbe_select_prune(const char *const *names, size_t n,
 	    const char *prefix, const struct pkgbe_policy *pol,
@@ -100,5 +103,22 @@ bool	pkgbe_is_slash(const char *path);
  * 0 on success; -1 on an unknown word, with *mask left unchanged.
  */
 int	pkgbe_parse_hooks(const char *s, unsigned *mask);
+
+/*
+ * Parse a duration: "<n>[s|m|h|d|w]" (no suffix = seconds), e.g. "30d",
+ * "12h", "0". Surrounding blanks are allowed, signs and inner blanks are
+ * not. The result may not exceed 2^31-1 seconds (~68 years).
+ * 0 on success; -1 on an empty, negative, malformed or too large value,
+ * with *out left unchanged.
+ */
+int	pkgbe_parse_duration(const char *s, time_t *out);
+
+/*
+ * BE_REPOSITORIES check. `filter` is a list of repository names
+ * (comma and/or space separated, case-sensitive). The word "local"
+ * stands for packages that do not come from a repository (pkg add),
+ * i.e. repo NULL or "". An empty or NULL filter matches everything.
+ */
+bool	pkgbe_repo_listed(const char *filter, const char *repo);
 
 #endif

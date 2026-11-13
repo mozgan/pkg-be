@@ -9,6 +9,7 @@
 #include <sys/types.h>
 
 #include <err.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -363,14 +364,20 @@ cmd_prune(libbe_handle_t *be, struct pkgbe_conf *c, int argc, char **argv)
 	}
 	if (!dry && !need_root())
 		return (EX_NOPERM);
-	if (c->keep <= 0 && c->keep_days <= 0) {
-		printf("BE_KEEP and BE_KEEP_DAYS are 0: nothing to prune\n");
+	if (c->bad != NULL) {
+		fprintf(stderr, "invalid %s \"%s\" in %s.conf, not pruning\n",
+		    c->bad, c->bad_val, PLUGIN_NAME);
+		return (EX_CONFIG);
+	}
+	if (c->keep <= 0 && c->keep_age <= 0) {
+		printf("BE_KEEP and BE_KEEP_AGE are 0: nothing to prune\n");
 		return (EX_OK);
 	}
 	n = pkgbe_prune(be, c, dry);
 	if (n == 0)
-		printf("nothing to prune (BE_KEEP = %d, BE_KEEP_DAYS = %d)\n",
-		    c->keep, c->keep_days);
+		printf("nothing to prune (BE_KEEP = %d, BE_KEEP_AGE = %jds, "
+		    "BE_MIN_AGE = %jds)\n", c->keep, (intmax_t)c->keep_age,
+		    (intmax_t)c->min_age);
 	return (EX_OK);
 }
 

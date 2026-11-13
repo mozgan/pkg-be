@@ -3,7 +3,7 @@
 .\"
 .\" Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
 .\"
-.Dd November 10, 2026
+.Dd November 12, 2026
 .Dt PKG-BE 8
 .Os
 .Sh NAME
@@ -125,9 +125,10 @@ Do not ask for confirmation.
 .El
 .It Cm prune Op Fl n
 Apply the
-.Va BE_KEEP
+.Va BE_KEEP ,
+.Va BE_KEEP_AGE
 and
-.Va BE_KEEP_DAYS
+.Va BE_MIN_AGE
 retention now.
 With
 .Fl n ,
@@ -156,11 +157,57 @@ Default
 Number of boot environments to keep.
 0 keeps all.
 Default 5.
-.It Va BE_KEEP_DAYS
-Also destroy boot environments older than this many days, judged by the
+.It Va BE_KEEP_AGE
+Also destroy boot environments older than this duration, judged by the
 time in their name.
+A duration is a number with an optional suffix
+.Cm s ,
+.Cm m ,
+.Cm h ,
+.Cm d
+or
+.Cm w ,
+for example
+.Dq 30d ;
+without a suffix it is seconds.
+At most 2^31-1 seconds.
 0 disables this rule.
-Default 0.
+Default
+.Dq 0 .
+The newest boot environment is never destroyed.
+.It Va BE_KEEP_DAYS
+Older form of
+.Va BE_KEEP_AGE
+in whole days.
+Ignored when
+.Va BE_KEEP_AGE
+is not 0.
+.It Va BE_MIN_AGE
+Never destroy boot environments younger than this duration, even if
+.Va BE_KEEP
+or
+.Va BE_KEEP_AGE
+would.
+More than
+.Va BE_KEEP
+may then remain.
+0 disables this rule.
+Default
+.Dq 0 .
+.Pp
+If a duration is invalid, boot environments are still created but none
+are destroyed, and an error is shown.
+.It Va BE_REPOSITORIES
+Create a boot environment only if at least one package of the operation
+comes from one of these repositories (comma or space separated, case
+sensitive).
+The word
+.Cm local
+means packages that do not come from a repository, such as those
+installed with
+.Cm pkg add .
+Empty means any repository.
+Default empty.
 .It Va BE_MIN_FREE
 Warn when the pool has less than this percentage of free space.
 0 disables the warning.
@@ -169,7 +216,13 @@ Default 10.
 Boolean.
 Also log creation, destruction and errors with
 .Xr syslog 3
-(facility user).
+(facility user, ident of
+.Xr pkg 8 ,
+text starting with
+.Dq pkg-be: ) .
+.Va SYSLOG No = false in
+.Xr pkg.conf 5
+also turns this off.
 Default
 .Dq true .
 .It Va BE_HOOKS
@@ -224,6 +277,14 @@ Create a boot environment before upgrades and installs, keep ten:
 .Bd -literal -offset indent
 BE_HOOKS = "upgrade, install";
 BE_KEEP = 10;
+.Ed
+.Pp
+Only for base system updates (pkgbase), keep a month, never destroy one
+from the last day:
+.Bd -literal -offset indent
+BE_REPOSITORIES = "FreeBSD-base";
+BE_KEEP_AGE = "30d";
+BE_MIN_AGE = "1d";
 .Ed
 .Pp
 Find the boot environment taken before a bad upgrade, check what has
