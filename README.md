@@ -69,13 +69,7 @@ and that system boots from ZFS. In these cases pkg-be creates nothing:
 | `pkg-static`                                                | Statically linked pkg, used for recovery.                                                               | It cannot load shared-object plugins; pkg disables plugins in it.                                                                                                                                                                |
 | `BE_ENABLED = false`, or the operation is not in `BE_HOOKS` | Normal operation.                                                                                       | Turned off by configuration.                                                                                                                                                                                                     |
 | No package from `BE_REPOSITORIES`                           | Normal operation.                                                                                       | Filtered out by configuration; pkg-be says so.                                                                                                                                                                                   |
-| Nothing to do (e.g. system up to date)                      | No jobs.                                                                                                | pkg only calls the hook when there is work.                                                                                                                                                                                      |
-
-## Port
-
-`port/sysutils/pkg-be` is the FreeBSD port. `distinfo` is not kept in
-the repository: take it from the GitHub release of the tag (GitHub's tag
-tarball differs from a local `git archive`).
+| Nothing to do (e.g. system up to date)                      | No jobs.                                                                                                | pkg only calls the hook when there is work.                         
 
 ## Author
 
