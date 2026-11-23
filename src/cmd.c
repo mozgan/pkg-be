@@ -6,7 +6,9 @@
  * "pkg be" subcommand: list, show, diff, rollback, prune.
  */
 
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/mount.h>
+#include <sys/ucred.h>
 
 #include <err.h>
 #include <stdint.h>
@@ -65,7 +67,8 @@ load_recs(libbe_handle_t *be, struct pkgbe_rec **recs, size_t *n)
 	    __DECONST(char *, "1"), __DECONST(char *, "-o"),
 	    __DECONST(char *, "name,property,value"),
 	    __DECONST(char *, "creation," PROP_NS "op," PROP_NS "count,"
-	    PROP_NS "packages"), __DECONST(char *, root), NULL };
+	    PROP_NS "packages," PROP_NS "status"),
+	    __DECONST(char *, root), NULL };
 	int rc;
 
 	if (pkgbe_run(argv, &out) != 0) {
@@ -131,14 +134,15 @@ cmd_list(libbe_handle_t *be, struct pkgbe_conf *c, int argc, char **argv)
 	}
 	if (load_recs(be, &r, &n) != 0)
 		return (EX_SOFTWARE);
-	printf("%-28s %-6s %-16s %-10s %5s  %s\n", "BE", "ACTIVE", "CREATED",
-	    "OP", "PKGS", "CHANGES");
+	printf("%-28s %-6s %-16s %-10s %-10s %5s  %s\n", "BE", "ACTIVE",
+	    "CREATED", "OP", "STATUS", "PKGS", "CHANGES");
 	for (size_t i = 0; i < n; i++) {
 		if (!all && !pkgbe_is_ours(r[i].name, c->prefix))
 			continue;
 		fmt_time(r[i].created, when, sizeof(when));
-		printf("%-28s %-6s %-16s %-10s ", r[i].name,
-		    flags(be, r[i].name), when, r[i].op ? r[i].op : "-");
+		printf("%-28s %-6s %-16s %-10s %-10s ", r[i].name,
+		    flags(be, r[i].name), when, r[i].op ? r[i].op : "-",
+		    r[i].status ? r[i].status : "-");
 		if (r[i].count >= 0)
 			printf("%5d  ", r[i].count);
 		else
@@ -179,6 +183,8 @@ cmd_show(libbe_handle_t *be, const char *name)
 	printf("Active:    %s\n", flags(be, e->name));
 	printf("Created:   %s\n", when);
 	printf("Operation: %s\n", e->op ? e->op : "-");
+	/* Unset for BEs made by pkg-be < 0.3.0. */
+	printf("Status:    %s\n", e->status ? e->status : "-");
 	if (e->count >= 0)
 		printf("Packages:  %d\n", e->count);
 	else
@@ -213,6 +219,26 @@ query_pkgs(const char *root)
 	return (out != NULL ? out : strdup(""));
 }
 
+/* Where the BE's root dataset is mounted, if it is. */
+static bool
+mounted_at(libbe_handle_t *be, const char *name, char *mnt, size_t len)
+{
+	struct statfs *m;
+	char ds[BE_MAXPATHLEN];
+	int n;
+
+	if (be_root_concat(be, name, ds) != BE_ERR_SUCCESS ||
+	    (n = getmntinfo(&m, MNT_NOWAIT)) <= 0)
+		return (false);
+	for (int i = 0; i < n; i++)
+		if (strcmp(m[i].f_fstypename, "zfs") == 0 &&
+		    strcmp(m[i].f_mntfromname, ds) == 0) {
+			strlcpy(mnt, m[i].f_mntonname, len);
+			return (true);
+		}
+	return (false);
+}
+
 /*
  * Package list ("name version" lines) of a BE. The running BE is read
  * from "/"; any other BE is mounted temporarily. NULL on error.
@@ -229,6 +255,9 @@ be_pkgs(libbe_handle_t *be, const char *name)
 	}
 	if (strcmp(name, be_active_name(be)) == 0)
 		return (query_pkgs("/"));
+	/* Already mounted (e.g. "bectl mount"): use it, leave it mounted. */
+	if (mounted_at(be, name, mnt, sizeof(mnt)))
+		return (query_pkgs(mnt));
 	if (be_mount(be, name, NULL, 0, mnt) != BE_ERR_SUCCESS) {
 		warnx("could not mount %s: %s", name,
 		    libbe_error_description(be));
@@ -292,8 +321,10 @@ confirm(const char *msg)
 
 	printf("%s [y/N]: ", msg);
 	fflush(stdout);
-	if (fgets(buf, sizeof(buf), stdin) == NULL)
+	if (fgets(buf, sizeof(buf), stdin) == NULL) {
+		printf("\n");		/* EOF: end the prompt line */
 		return (false);
+	}
 	return (buf[0] == 'y' || buf[0] == 'Y');
 }
 
@@ -331,8 +362,15 @@ cmd_rollback(libbe_handle_t *be, int argc, char **argv)
 	}
 	snprintf(msg, sizeof(msg), "Boot into %s %s?", name,
 	    temporary ? "on the next reboot only" : "from now on");
-	if (!yes && !confirm(msg))
+	if (!yes && !isatty(STDIN_FILENO)) {
+		warnx("no terminal to ask on; %s not activated (use -y)",
+		    name);
+		return (EX_USAGE);
+	}
+	if (!yes && !confirm(msg)) {
+		printf("%s not activated.\n", name);
 		return (EX_OK);
+	}
 	if (be_activate(be, name, temporary) != BE_ERR_SUCCESS) {
 		warnx("could not activate %s: %s", name,
 		    libbe_error_description(be));

@@ -61,6 +61,7 @@ struct pkgbe_rec {
 	char		*op;		/* pkg-be:op, NULL if unset */
 	int		 count;		/* pkg-be:count, -1 if unset */
 	char		*packages;	/* pkg-be:packages, NULL if unset */
+	char		*status;	/* pkg-be:status, NULL if unset */
 };
 
 /*
@@ -90,6 +91,17 @@ const char *pkgbe_argv_rootdir(int argc, char *const argv[]);
 
 /* True for "/", "//", ... */
 bool	pkgbe_is_slash(const char *path);
+
+/*
+ * BE_PREFIX check, stricter than libbe's be_validate_name(), which lets
+ * "/" through (the clone then fails after the snapshot was taken).
+ * Allowed: 1-64 characters from [A-Za-z0-9._-], starting with a letter
+ * or digit.
+ */
+bool	pkgbe_prefix_valid(const char *prefix);
+
+/* True if dataset `ds` is `be` itself or below it ("be/..."). */
+bool	pkgbe_ds_inside(const char *ds, const char *be);
 
 /* Operations that can trigger a boot environment (bit mask). */
 #define PKGBE_HOOK_UPGRADE	0x1u

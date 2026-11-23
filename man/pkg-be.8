@@ -3,7 +3,7 @@
 .\"
 .\" Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
 .\"
-.Dd November 12, 2026
+.Dd November 23, 2026
 .Dt PKG-BE 8
 .Os
 .Sh NAME
@@ -122,6 +122,11 @@ Requires root.
 Activate for the next boot only.
 .It Fl y
 Do not ask for confirmation.
+Without
+.Fl y
+and without a terminal on standard input,
+.Nm
+activates nothing and exits 64.
 .El
 .It Cm prune Op Fl n
 Apply the
@@ -150,7 +155,12 @@ Boolean.
 Default
 .Dq true .
 .It Va BE_PREFIX
-Name prefix.
+Name prefix: 1 to 64 characters from
+.Ql A-Z a-z 0-9 . _ - ,
+starting with a letter or digit.
+With an invalid prefix
+.Nm
+reports an error and creates nothing.
 Default
 .Dq pkg-be .
 .It Va BE_KEEP
@@ -175,13 +185,6 @@ At most 2^31-1 seconds.
 Default
 .Dq 0 .
 The newest boot environment is never destroyed.
-.It Va BE_KEEP_DAYS
-Older form of
-.Va BE_KEEP_AGE
-in whole days.
-Ignored when
-.Va BE_KEEP_AGE
-is not 0.
 .It Va BE_MIN_AGE
 Never destroy boot environments younger than this duration, even if
 .Va BE_KEEP
@@ -238,6 +241,36 @@ or
 .Cm none .
 Default
 .Dq upgrade .
+.Pp
+The operation is the pkg command, not what it does to a package:
+.Cm pkg install
+that upgrades installed packages counts as
+.Cm install .
+.Cm pkg add
+and
+.Cm pkg register
+run no plugin hooks, so they never create one.
+.Cm pkg unregister
+counts as
+.Cm deinstall ,
+although it removes no files.
+.Pp
+One pkg command creates at most one boot environment, even when it runs
+several operations (for example
+.Cm pkg upgrade --autoremove ) .
+When pkg upgrades itself it restarts
+.Pq Ev PKG_RESTARTED
+and the restarted run creates none.
+.Pp
+A boot environment holds only the datasets of the running one.
+If the pkg database
+.Pq Va PKG_DBDIR
+or
+.Pa /usr/local
+is on another dataset,
+.Nm
+warns on each boot environment it creates: rolling back would not
+restore them.
 .El
 .Sh PROPERTIES
 Each boot environment gets these ZFS user properties:
@@ -260,6 +293,14 @@ Number of planned changes.
 .It Va pkg-be:version
 .Nm
 version.
+.It Va pkg-be:status
+.Dq complete
+when pkg finished the operation,
+.Dq incomplete
+when it failed or was interrupted.
+Unset on boot environments from
+.Nm
+before 0.3.0.
 .El
 .Sh FILES
 .Bl -tag -width "/usr/local/etc/pkg/pkg-be.conf" -compact

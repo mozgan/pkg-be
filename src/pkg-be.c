@@ -7,7 +7,8 @@
  * This file holds the pkg(8) plugin entry points and the hooks.
  */
 
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <sys/wait.h>
 
@@ -27,13 +28,14 @@
 #include "be_util.h"
 
 #define DEFAULT_PREFIX	"pkg-be"
+#ifndef PKGBE_LOCALBASE
+#define PKGBE_LOCALBASE	"/usr/local"
+#endif
 #define DEFAULT_KEEP	"5"
 #define DEFAULT_HOOKS	"upgrade"
 #define DEFAULT_KEEP_DAYS "0"
 #define DEFAULT_AGE	"0"
 #define DEFAULT_REPOS	""
-/* BE_KEEP_DAYS above this would overflow BE_KEEP_AGE's range. */
-#define MAX_KEEP_DAYS	24855
 #define DEFAULT_MIN_FREE "10"
 #define MAX_SEQ		99
 /* ZFS user property values are limited to 8191 bytes. */
@@ -84,8 +86,6 @@ void
 pkgbe_conf_read(struct pkgbe_conf *c)
 {
 	const pkg_object *o;
-	time_t age = 0;
-	int days;
 
 	memset(c, 0, sizeof(*c));
 	c->enabled = true;
@@ -95,18 +95,14 @@ pkgbe_conf_read(struct pkgbe_conf *c)
 	c->repos = DEFAULT_REPOS;
 	c->min_free = atoi(DEFAULT_MIN_FREE);
 	c->syslog = true;
-	if ((o = conf_find("BE_KEEP_DAYS")) != NULL) {
-		days = (int)pkg_object_int(o);
-		if (days > MAX_KEEP_DAYS) {
-			c->bad = "BE_KEEP_DAYS";
-			c->bad_val = "(too large)";
-		} else if (days > 0)
-			c->keep_age = (time_t)days * 86400;
-	}
-	/* BE_KEEP_AGE, when not 0, replaces BE_KEEP_DAYS. */
-	conf_duration(c, "BE_KEEP_AGE", &age);
-	if (age > 0)
-		c->keep_age = age;
+	/*
+	 * BE_KEEP_DAYS was removed in 0.3.0. It is still registered only
+	 * so that an old setting is reported: pkg silently ignores keys a
+	 * plugin does not register.
+	 */
+	if ((o = conf_find("BE_KEEP_DAYS")) != NULL)
+		c->old_days = (int)pkg_object_int(o);
+	conf_duration(c, "BE_KEEP_AGE", &c->keep_age);
 	conf_duration(c, "BE_MIN_AGE", &c->min_age);
 	if ((o = conf_find("BE_MIN_FREE")) != NULL)
 		c->min_free = (int)pkg_object_int(o);
@@ -377,7 +373,7 @@ tag_be(const struct pkgbe_conf *c, libbe_handle_t *be, const char *name,
 {
 	char ds[BE_MAXPATHLEN], list[PKGLIST_MAX];
 	char *p_op = NULL, *p_list = NULL, *p_cnt = NULL, *p_ver = NULL;
-	char *argv[8];
+	char *argv[9];
 	char **items;
 	size_t n;
 
@@ -396,8 +392,10 @@ tag_be(const struct pkgbe_conf *c, libbe_handle_t *be, const char *name,
 		argv[3] = p_list;
 		argv[4] = p_cnt;
 		argv[5] = p_ver;
-		argv[6] = ds;
-		argv[7] = NULL;
+		/* Set to "complete" by the post hook if pkg succeeds. */
+		argv[6] = __DECONST(char *, PROP_NS "status=incomplete");
+		argv[7] = ds;
+		argv[8] = NULL;
 		if (pkgbe_run(argv, NULL) != 0)
 			pkgbe_log(c, true, "could not set properties on %s",
 			    ds);
@@ -410,6 +408,85 @@ tag_be(const struct pkgbe_conf *c, libbe_handle_t *be, const char *name,
 }
 
 /* ---- hooks ---- */
+
+/*
+ * The boot environment made by this pkg process, "" if none. One pkg
+ * command can apply jobs more than once (upgrade then autoremove, or a
+ * second pass after conflicts); the first BE already holds the state
+ * from before the command, so no second one is made.
+ */
+static char made[256];
+
+/* Remove our snapshot after a failed clone: "zfs destroy -r". */
+static void
+drop_snapshot(const struct pkgbe_conf *c, libbe_handle_t *be,
+    const char *snap)
+{
+	char full[BE_MAXPATHLEN];
+	char *argv[] = { __DECONST(char *, ZFS_CMD),
+	    __DECONST(char *, "destroy"), __DECONST(char *, "-r"), full,
+	    NULL };
+
+	/* snap is "<be>@<time>"; strchr keeps "zfs destroy" off datasets. */
+	if (strchr(snap, '@') == NULL ||
+	    be_root_concat(be, snap, full) != BE_ERR_SUCCESS)
+		return;
+	if (pkgbe_run(argv, NULL) != 0)
+		pkgbe_log(c, true, "could not remove snapshot %s", full);
+	else
+		pkgbe_log(c, false, "removed snapshot %s", full);
+}
+
+/*
+ * A BE holds only the boot environment's datasets (libbe(3): "a
+ * recursive snapshot of the currently booted boot environment").
+ * Warn if pkg's database or LOCALBASE lives elsewhere: rolling back
+ * would then mix old and new.
+ */
+static void
+check_datasets(const struct pkgbe_conf *c, libbe_handle_t *be)
+{
+	const pkg_object *o;
+	const char *paths[2] = { PKGBE_LOCALBASE, "/var/db/pkg" };
+	struct statfs sf;
+
+	if ((o = pkg_config_get("PKG_DBDIR")) != NULL &&
+	    pkg_object_string(o) != NULL)
+		paths[1] = pkg_object_string(o);
+	for (size_t i = 0; i < 2; i++) {
+		if (statfs(paths[i], &sf) != 0 ||
+		    strcmp(sf.f_fstypename, "zfs") != 0)
+			continue;
+		if (!pkgbe_ds_inside(sf.f_mntfromname, be_active_path(be)))
+			pkgbe_log(c, true, "WARNING: %s is on %s, outside the "
+			    "boot environment %s; it is not saved",
+			    paths[i], sf.f_mntfromname, be_active_path(be));
+	}
+}
+
+/* Set pkg-be:status on our BE (best effort). */
+static void
+set_status(const struct pkgbe_conf *c, const char *name, const char *st)
+{
+	libbe_handle_t *be;
+	char ds[BE_MAXPATHLEN], *prop = NULL;
+	char *argv[5];
+
+	if ((be = libbe_init(NULL)) == NULL)
+		return;
+	if (be_root_concat(be, name, ds) == BE_ERR_SUCCESS &&
+	    asprintf(&prop, PROP_NS "status=%s", st) > 0) {
+		argv[0] = __DECONST(char *, ZFS_CMD);
+		argv[1] = __DECONST(char *, "set");
+		argv[2] = prop;
+		argv[3] = ds;
+		argv[4] = NULL;
+		if (pkgbe_run(argv, NULL) != 0)
+			pkgbe_log(c, true, "could not set status on %s", ds);
+	}
+	free(prop);
+	libbe_close(be);
+}
 
 static bool
 blank(const char *s)
@@ -477,13 +554,32 @@ make_be(const char *op, struct pkg_jobs *jobs)
 {
 	struct pkgbe_conf c;
 	libbe_handle_t *be;
-	char name[256];
+	char name[256], snap[BE_MAXPATHLEN];
 	int seq, freep;
 	time_t now;
 
 	pkgbe_conf_read(&c);
 	if (!c.enabled)
 		return (EPKG_OK);
+	if (made[0] != '\0') {
+		pkg_plugin_info(pkgbe_self, "boot environment %s already "
+		    "made by this pkg run, not making another before %s",
+		    made, op);
+		/* The run goes on: "complete" again only if this ends well. */
+		set_status(&c, made, "incomplete");
+		return (EPKG_OK);
+	}
+	/*
+	 * pkg upgraded itself and restarted (src/main.c sets PKG_RESTARTED
+	 * before it runs itself again). The run before the restart already
+	 * made a boot environment of the system as it was.
+	 */
+	if (getenv("PKG_RESTARTED") != NULL) {
+		pkg_plugin_info(pkgbe_self, "pkg restarted after upgrading "
+		    "itself; the boot environment made before is kept, "
+		    "no new one");
+		return (EPKG_OK);
+	}
 	if (other_rootdir()) {
 		pkg_plugin_info(pkgbe_self, "pkg works on another root (-r), "
 		    "skipping boot environment");
@@ -505,6 +601,14 @@ make_be(const char *op, struct pkg_jobs *jobs)
 		return (EPKG_OK);
 	}
 	libbe_print_on_error(be, false);
+
+	if (!pkgbe_prefix_valid(c.prefix)) {
+		pkgbe_log(&c, true, "invalid BE_PREFIX \"%s\" (allowed: "
+		    "A-Z a-z 0-9 . _ -, at most 64), no boot environment",
+		    c.prefix);
+		goto fail;
+	}
+	check_datasets(&c, be);
 
 	/* Find a free name: two runs in the same second get a -N suffix. */
 	now = time(NULL);
@@ -530,13 +634,51 @@ make_be(const char *op, struct pkg_jobs *jobs)
 
 	pkgbe_log(&c, false, "creating boot environment before %s: %s",
 	    op, name);
-	if (be_create(be, name) != BE_ERR_SUCCESS) {
+	/*
+	 * What be_create() does (lib/libbe/be.c, be_create_from_existing),
+	 * in two steps: be_create() keeps its snapshot when the clone fails.
+	 * NULL = libbe's own snapshot name, so BE_DESTROY_AUTOORIGIN still
+	 * removes it when the BE is pruned.
+	 */
+	if (be_snapshot(be, be_active_path(be), NULL, true, snap) !=
+	    BE_ERR_SUCCESS) {
 		/* pkg ignores our return value; the operation continues. */
+		pkgbe_log(&c, true, "WARNING: could not snapshot %s: %s",
+		    be_active_path(be), libbe_error_description(be));
+		goto fail;
+	}
+#ifdef PKGBE_TESTING
+	/*
+	 * Test builds only (tests/integration.sh): let libbe's clone fail
+	 * for real after the snapshot, to test drop_snapshot().
+	 */
+	if (getenv("PKGBE_TEST_FAIL_CLONE") != NULL)
+		strlcpy(name, "pkgbe-test/fail", sizeof(name));
+#endif
+	if (be_create_depth(be, name, snap, -1) != BE_ERR_SUCCESS) {
 		pkgbe_log(&c, true,
 		    "WARNING: could not create boot environment %s: %s",
 		    name, libbe_error_description(be));
+		/*
+		 * be_clone() clones the BE root first, then its child
+		 * datasets, and does not undo the root when a child fails
+		 * (lib/libbe/be.c, be_clone_cb). The name was free before
+		 * (be_exists() above), so whatever is there now is ours.
+		 * Its clones depend on the snapshot: destroy them first.
+		 */
+		if (be_exists(be, name) == BE_ERR_SUCCESS) {
+			if (be_destroy(be, name, 0) == BE_ERR_SUCCESS)
+				pkgbe_log(&c, false, "removed the partial "
+				    "boot environment %s", name);
+			else
+				pkgbe_log(&c, true, "could not remove the "
+				    "partial boot environment %s: %s", name,
+				    libbe_error_description(be));
+		}
+		drop_snapshot(&c, be, snap);
 		goto fail;
 	}
+	strlcpy(made, name, sizeof(made));
 	tag_be(&c, be, name, op, jobs);
 	pkgbe_prune(be, &c, false);
 	libbe_close(be);
@@ -570,6 +712,19 @@ autoremove_cb(void *data, struct pkgdb *db __unused)
 	return (make_be("autoremove", data));
 }
 
+/* pkg calls post hooks only when all jobs were applied. */
+static int
+post_cb(void *data __unused, struct pkgdb *db __unused)
+{
+	struct pkgbe_conf c;
+
+	if (made[0] == '\0')
+		return (EPKG_OK);
+	pkgbe_conf_read(&c);
+	set_status(&c, made, "complete");
+	return (EPKG_OK);
+}
+
 static const struct {
 	unsigned bit;
 	pkg_plugin_hook_t hook;
@@ -580,6 +735,10 @@ static const struct {
 	{ PKGBE_HOOK_DEINSTALL, PKG_PLUGIN_HOOK_PRE_DEINSTALL, deinstall_cb },
 	{ PKGBE_HOOK_AUTOREMOVE, PKG_PLUGIN_HOOK_PRE_AUTOREMOVE,
 	    autoremove_cb },
+	{ PKGBE_HOOK_UPGRADE, PKG_PLUGIN_HOOK_POST_UPGRADE, post_cb },
+	{ PKGBE_HOOK_INSTALL, PKG_PLUGIN_HOOK_POST_INSTALL, post_cb },
+	{ PKGBE_HOOK_DEINSTALL, PKG_PLUGIN_HOOK_POST_DEINSTALL, post_cb },
+	{ PKGBE_HOOK_AUTOREMOVE, PKG_PLUGIN_HOOK_POST_AUTOREMOVE, post_cb },
 };
 
 /* ---- plugin entry points ---- */
@@ -625,6 +784,19 @@ pkg_plugin_init(struct pkg_plugin *p)
 		pkg_plugin_error(p, "invalid BE_HOOKS \"%s\", using \"%s\"",
 		    c.hooks, DEFAULT_HOOKS);
 		(void)pkgbe_parse_hooks(DEFAULT_HOOKS, &mask);
+	}
+	if (c.old_days > 0)
+		pkg_plugin_error(p, "BE_KEEP_DAYS was removed in 0.3.0 and is "
+		    "ignored; use BE_KEEP_AGE = \"%dd\"", c.old_days);
+	else if (c.old_days < 0)
+		pkg_plugin_error(p, "BE_KEEP_DAYS was removed in 0.3.0 and is "
+		    "ignored; see BE_KEEP_AGE");
+	/* Refuse before any snapshot is taken. */
+	if (!pkgbe_prefix_valid(c.prefix)) {
+		pkg_plugin_error(p, "invalid BE_PREFIX \"%s\" (allowed: "
+		    "A-Z a-z 0-9 . _ -, at most 64): %s stays inactive",
+		    c.prefix, PLUGIN_NAME);
+		return (EPKG_OK);
 	}
 	if (c.bad != NULL)
 		pkg_plugin_error(p, "invalid %s \"%s\": boot environments "

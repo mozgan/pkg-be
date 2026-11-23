@@ -15,6 +15,11 @@ SRCS=		pkg-be.c cmd.c be_util.c
 WARNS?=		6
 CFLAGS+=	-I${.CURDIR}/include -I${LOCALBASE}/include
 CFLAGS+=	-DPKG_CMD=\"${LOCALBASE}/sbin/pkg\"
+CFLAGS+=	-DPKGBE_LOCALBASE=\"${LOCALBASE}\"
+# Test hooks for tests/integration.sh only; never in a normal build.
+.if defined(PKGBE_TESTING)
+CFLAGS+=	-DPKGBE_TESTING
+.endif
 LDFLAGS+=	-L${LOCALBASE}/lib
 LDADD+=		-lpkg -lbe -lnvpair
 

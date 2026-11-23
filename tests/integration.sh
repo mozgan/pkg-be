@@ -13,6 +13,7 @@ PKGNAME=${ITEST_PKG:-pkgconf}
 # Removed and reinstalled to test the deinstall hook. Must be safe to remove.
 DELPKG=${ITEST_DEL_PKG:-universal-ctags}
 PREFIX=pkgbe-itest
+SRC=$(cd "$(dirname "$0")/.." && pwd)
 KEEP=2
 CONFDIR=$(pkg config PLUGINS_CONF_DIR)
 CONF=${CONFDIR%/}/pkg-be.conf
@@ -32,7 +33,24 @@ pkg info -e "$PKGNAME" || { echo "SKIP: $PKGNAME not installed"; exit 77; }
 ours() { bectl list -H | awk -v p="$PREFIX-" 'index($1, p) == 1 { print $1 }'; }
 # BEs that exist before the test are never touched by cleanup.
 PRE_EXISTING=$(bectl list -H | awk '{print $1}')
+ROOTDS=$(zfs list -H -o name / | sed 's,/[^/]*$,,')
+nsnap() { zfs list -H -t snapshot -o name -r "$ROOTDS" | wc -l; }
+NSNAP0=$(nsnap)
+IMMUT=""
+CT=""; HTTPD=""; SO_BAK=""; DBDS=""; MNTBE=""; CHILD=""
 cleanup() {
+	if [ -n "$CHILD" ] && zfs list "$CHILD" >/dev/null 2>&1; then
+		zfs destroy -r "$CHILD" || true
+	fi
+	if [ -n "$SO_BAK" ]; then cat "$SO_BAK" > "$SO"; rm -f "$SO_BAK"; fi
+	if [ -n "$MNTBE" ]; then bectl umount "$MNTBE" 2>/dev/null || true; fi
+	if [ -n "$DBDS" ]; then zfs destroy -r "$DBDS" || true; fi
+	[ -n "$IMMUT" ] && chflags noschg "$IMMUT"
+	[ -n "$HTTPD" ] && kill "$HTTPD" 2>/dev/null
+	if [ -n "$CT" ]; then
+		pkg delete -qy -g 'pkgbe-itest-c[12]' >/dev/null 2>&1 || true
+		rm -rf "$CT" /usr/local/share/pkgbe-itest-conflict
+	fi
 	for b in $(ours); do bectl destroy -o "$b" || true; done
 	# A broken pkg-be.conf makes pkg use the default prefix "pkg-be".
 	for b in $(bectl list -H | awk '$1 ~ /^pkg-be-[0-9]{8}-[0-9]{6}/ {print $1}'); do
@@ -158,13 +176,18 @@ check "SYSLOG=false: BE created" 'bectl list -H | grep -q "^$last"'
 check "SYSLOG=false: nothing logged" '! grep -q "$last" /var/log/messages' \
     'echo "want no line with $last, got:"; grep "$last" /var/log/messages'
 
-# 13) BE_KEEP_DAYS: a BE named as if from 2020 is destroyed, foreign ones stay.
+# 13) BE_KEEP_DAYS (removed in 0.3.0): warned about, ignored, nothing pruned.
 bectl create "$PREFIX-20200101-000000"
 bectl create pkgbe-itest-manual
 printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\nBE_KEEP_DAYS = 30;\n' "$PREFIX" > "$CONF"
+out=$(pkg upgrade -fy "$PKGNAME" 2>&1)
+check "BE_KEEP_DAYS: removal warned" 'echo "$out" | grep -q "BE_KEEP_DAYS was removed.*BE_KEEP_AGE = \"30d\""' \
+    'echo "want the removal warning with BE_KEEP_AGE = \"30d\", output was:"; echo "$out" | tail -5'
+check "BE_KEEP_DAYS: ignored, 2020 BE kept" 'bectl list -H | grep -q "^$PREFIX-20200101-000000"' \
+    'echo "want it kept (the key does nothing now); it was destroyed"'
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\nBE_KEEP_AGE = "30d";\n' "$PREFIX" > "$CONF"
 pkg upgrade -fy "$PKGNAME" >/dev/null
-check "BE_KEEP_DAYS destroys old BE" '! bectl list -H | grep -q "^$PREFIX-20200101-000000"'
-check "BE_KEEP_DAYS keeps recent BEs" '[ "$(ours | wc -l)" -ge 2 ]'
+check "BE_KEEP_AGE=30d destroys the 2020 BE" '! bectl list -H | grep -q "^$PREFIX-20200101-000000"'
 check "foreign BE kept" 'bectl list -H | grep -q "^pkgbe-itest-manual"'
 bectl destroy -o pkgbe-itest-manual
 
@@ -255,7 +278,7 @@ check "BE_KEEP=1 alone: exactly 1 left" '[ "$(ours | wc -l)" -eq 1 ]' \
 
 # 23) Invalid durations: a BE is still made, nothing is destroyed.
 for bad in 'BE_MIN_AGE = "abc"' 'BE_KEEP_AGE = "-1d"' 'BE_KEEP_AGE = "1.5d"' \
-    'BE_MIN_AGE = "99999999999"' 'BE_KEEP_DAYS = 99999'; do
+    'BE_MIN_AGE = "99999999999"' 'BE_KEEP_AGE = "24856d"'; do
 	bectl create "$old"
 	printf 'BE_PREFIX = "%s";\nBE_KEEP = 1;\n%s;\n' "$PREFIX" "$bad" > "$CONF"
 	before=$(ours | wc -l)
@@ -288,11 +311,252 @@ out=$(pkg be prune -n 2>&1)
 check "\" 2w \" read as 1209600s" 'echo "$out" | grep -q "BE_KEEP_AGE = 1209600s"' \
     'echo "want 1209600s, got: $out"'
 
-# 25) BE_KEEP_AGE wins over BE_KEEP_DAYS when both are set.
+# 25) BE_KEEP_DAYS is not added to BE_KEEP_AGE any more.
 printf 'BE_PREFIX = "%s";\nBE_KEEP = 100;\nBE_KEEP_DAYS = 3;\nBE_KEEP_AGE = "1h";\n' "$PREFIX" > "$CONF"
 out=$(pkg be prune -n 2>&1)
-check "BE_KEEP_AGE beats BE_KEEP_DAYS" 'echo "$out" | grep -q "BE_KEEP_AGE = 3600s"' \
+check "BE_KEEP_DAYS does not change BE_KEEP_AGE" 'echo "$out" | grep -q "BE_KEEP_AGE = 3600s"' \
     'echo "want 3600s (1h), got: $out"'
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 100;\nBE_KEEP_DAYS = 0;\n' "$PREFIX" > "$CONF"
+out=$(pkg be prune -n 2>&1)
+check "BE_KEEP_DAYS = 0: no warning" '! echo "$out" | grep -q "BE_KEEP_DAYS"' \
+    'echo "want no warning for 0, got: $out"'
+
+# ---- v0.3.0 ----
+
+# 26) Success -> pkg-be:status = complete (set by the post hook).
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+pkg upgrade -fy "$PKGNAME" >/dev/null
+last=$(ours | tail -1); DS="$(zfs list -H -o name / | sed 's,/[^/]*$,,')/$last"
+check "status complete after success" '[ "$(zfs get -H -o value pkg-be:status "$DS")" = complete ]' \
+    'echo "want complete, got \"$(zfs get -H -o value pkg-be:status "$DS")\""'
+check "pkg be show prints status" 'pkg be show "$last" | grep -q "^Status: *complete"' \
+    'pkg be show "$last" | head -6'
+
+# 27) Failure -> status stays incomplete. An immutable directory makes the
+#     extraction fail after the pre hook ran (an immutable file does not:
+#     pkg still succeeds).
+IMMUT=$(pkg info -l "$PKGNAME" | awk '/\/bin\//{print $1; exit}' | xargs dirname 2>/dev/null)
+if [ -n "$IMMUT" ] && chflags schg "$IMMUT"; then
+	before=$(ours | wc -l)
+	pkg upgrade -fy "$PKGNAME" >/dev/null 2>&1 && rc=0 || rc=$?
+	chflags noschg "$IMMUT"; IMMUT=""
+
+	last=$(ours | tail -1); DS="$(zfs list -H -o name / | sed 's,/[^/]*$,,')/$last"
+	check "failed pkg run: pkg exited non-zero" '[ $rc -ne 0 ]' 'echo "pkg exit was $rc; the failure was not provoked"'
+	check "failed pkg run: BE made" '[ "$(ours | wc -l)" -eq $((before + 1)) ]'
+	check "failed pkg run: status incomplete" '[ "$(zfs get -H -o value pkg-be:status "$DS")" = incomplete ]' \
+	    'echo "want incomplete, got \"$(zfs get -H -o value pkg-be:status "$DS")\""'
+	pkg upgrade -fy "$PKGNAME" >/dev/null	# repair
+else
+	echo "skip - no binary in $PKGNAME to make immutable"
+fi
+
+# 28) One pkg run, one BE: upgrade + autoremove runs two operations.
+if pkg install -Ay "$DELPKG" >/dev/null 2>&1; then
+	printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\nBE_HOOKS = "all";\n' "$PREFIX" > "$CONF"
+	before=$(ours | wc -l)
+	out=$(pkg upgrade -fy --autoremove "$PKGNAME" 2>&1)
+	check "upgrade --autoremove: $DELPKG autoremoved" '! pkg info -e "$DELPKG"' 'echo "$DELPKG still installed; test is not valid"'
+	check "upgrade --autoremove: one BE" '[ "$(ours | wc -l)" -eq $((before + 1)) ]' \
+	    'echo "want $((before + 1)) BEs, got $(ours | wc -l):"; ours | tail -3'
+	check "upgrade --autoremove: says why" 'echo "$out" | grep -q "already made by this pkg run"' \
+	    'echo "$out" | grep pkg-be'
+	last=$(ours | tail -1); DS="$(zfs list -H -o name / | sed 's,/[^/]*$,,')/$last"
+	check "upgrade --autoremove: status complete" '[ "$(zfs get -H -o value pkg-be:status "$DS")" = complete ]' \
+	    'echo "got \"$(zfs get -H -o value pkg-be:status "$DS")\""'
+	rm -f "$CONF"; pkg install -y "$DELPKG" >/dev/null
+fi
+
+# 29) PKG_RESTARTED (pkg restarted after upgrading itself): no new BE.
+#     Simulated: the real restart needs an older pkg than the repository's.
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+before=$(ours | wc -l)
+out=$(env PKG_RESTARTED=1 pkg upgrade -fy "$PKGNAME" 2>&1)
+check "PKG_RESTARTED: no BE" '[ "$(ours | wc -l)" -eq '"$before"' ]' 'echo "want $before, got $(ours | wc -l)"'
+check "PKG_RESTARTED: says why" 'echo "$out" | grep -q "restarted after upgrading itself"' \
+    'echo "$out" | grep pkg-be'
+
+# 30) File conflict found after fetching: pkg applies the jobs a second
+#     time (EPKG_CONFLICT, "One more solver iteration"). The pre hook runs
+#     only when jobs are executed, so this must still give one BE.
+#     A local repository: c1-1.0 owns f; c2-2.0 also ships f; c1-2.0
+#     drops it. Served over HTTP so that pkg has to fetch (with file://
+#     the conflict is solved before applying, which is not this path).
+PY=$(command -v python3 || true)
+if [ -n "$PY" ]; then
+	CT=$(mktemp -d -t pkgbe-conflict)
+	mkdir -p "$CT/repo" "$CT/inst" "$CT/repos"
+	mkpkg() {	# NAME VERSION OUTDIR FILE...
+		n=$1; v=$2; o=$3; shift 3
+		r=$CT/root-$n-$v; d=/usr/local/share/pkgbe-itest-conflict
+		mkdir -p "$r$d"; : > "$CT/plist-$n-$v"
+		for f in "$@"; do
+			echo "$n $v" > "$r$d/$f"; echo "$d/$f" >> "$CT/plist-$n-$v"
+		done
+		printf 'name: %s\nversion: "%s"\norigin: test/%s\ncomment: pkg-be test\ndesc: pkg-be test\nmaintainer: test@example.org\nwww: https://example.org\nprefix: /usr/local\nabi: "%s"\n' \
+		    "$n" "$v" "$n" "$(pkg config ABI)" > "$CT/m-$n-$v"
+		pkg create -M "$CT/m-$n-$v" -p "$CT/plist-$n-$v" -r "$r" -o "$o"
+	}
+	mkpkg pkgbe-itest-c1 1.0 "$CT/inst" f
+	mkpkg pkgbe-itest-c2 1.0 "$CT/inst" g
+	mkpkg pkgbe-itest-c1 2.0 "$CT/repo" h
+	mkpkg pkgbe-itest-c2 2.0 "$CT/repo" f g
+	pkg repo -q "$CT/repo"
+	(cd "$CT/repo" && exec "$PY" -m http.server 18080 --bind 127.0.0.1) >/dev/null 2>&1 &
+	HTTPD=$!; sleep 2
+	printf 'pkgbe_itest: { url: "http://127.0.0.1:18080", signature_type: "none" }\n' > "$CT/repos/itest.conf"
+	pkg add "$CT/inst/pkgbe-itest-c1-1.0.pkg" "$CT/inst/pkgbe-itest-c2-1.0.pkg" >/dev/null
+	pkg -R "$CT/repos" update -q -f
+	printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+	before=$(ours | wc -l)
+	out=$(pkg -R "$CT/repos" upgrade -y -r pkgbe_itest 2>&1)
+	check "conflict: pkg took the second-pass path" 'echo "$out" | grep -q "One more solver iteration"' \
+	    'echo "pkg did not report EPKG_CONFLICT; this case was not exercised. Output:"; echo "$out" | tail -8'
+	check "conflict: upgrade done" '[ "$(pkg query %v pkgbe-itest-c2)" = 2.0 ]' 'echo "c2 is $(pkg query %v pkgbe-itest-c2)"'
+	check "conflict: one BE" '[ "$(ours | wc -l)" -eq $((before + 1)) ]' \
+	    'echo "want $((before + 1)), got $(ours | wc -l)"'
+	check "conflict: hook ran once" '[ "$(echo "$out" | grep -c "creating boot environment")" -eq 1 ] && ! echo "$out" | grep -q "already made"' \
+	    'echo "$out" | grep pkg-be'
+	last=$(ours | tail -1); DS="$(zfs list -H -o name / | sed 's,/[^/]*$,,')/$last"
+	check "conflict: status complete" '[ "$(zfs get -H -o value pkg-be:status "$DS")" = complete ]'
+	kill "$HTTPD"; HTTPD=""
+	pkg delete -qy -g 'pkgbe-itest-c[12]' >/dev/null
+	rm -rf "$CT" /usr/local/share/pkgbe-itest-conflict; CT=""
+else
+	echo "skip - no python3 for a local HTTP repository, conflict case not tested"
+fi
+
+
+# 31) Invalid BE_PREFIX is refused when pkg loads the plugin, before
+#     any snapshot. libbe alone accepted "bad/name" and leaked a snapshot.
+for bp in "bad/name" "a b" "-x" "a@b" "$(printf 'a%.0s' $(seq 65))"; do
+	printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$bp" > "$CONF"
+	s0=$(nsnap); b0=$(bectl list -H | wc -l)
+	out=$(pkg upgrade -fy "$PKGNAME" 2>&1)
+	check "BE_PREFIX \"$bp\": error shown" 'echo "$out" | grep -q "invalid BE_PREFIX"' \
+	    'echo "want \"invalid BE_PREFIX\", output:"; echo "$out" | grep pkg-be'
+	check "BE_PREFIX \"$bp\": no BE" '[ "$(bectl list -H | wc -l)" -eq '"$b0"' ]' \
+	    'echo "BEs: want $b0, got $(bectl list -H | wc -l)"'
+	check "BE_PREFIX \"$bp\": no snapshot left" '[ "$(nsnap)" -eq '"$s0"' ]' \
+	    'echo "snapshots: want $s0, got $(nsnap):"; zfs list -H -t snapshot -o name -r "$ROOTDS"'
+done
+
+# 32) If the clone fails after the snapshot, the snapshot is removed.
+#     Needs a test build (make PKGBE_TESTING=1): PKGBE_TEST_FAIL_CLONE
+#     makes libbe's clone fail for real.
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+SO=$(pkg config PKG_PLUGINS_DIR); SO=${SO%/}/pkg-be.so
+TB=$(mktemp -d -t pkgbe-build)
+cp -R "$SRC/" "$TB/src"
+if (cd "$TB/src" && make clean >/dev/null 2>&1; find . -name '.depend*' -delete;
+    make PKGBE_TESTING=1 >/dev/null 2>&1) && [ -f "$TB/src/pkg-be.so" ]; then
+	SO_BAK=$(mktemp -t pkgbe-so); cp "$SO" "$SO_BAK"
+	cat "$TB/src/pkg-be.so" > "$SO"
+	printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+	s0=$(nsnap); before=$(ours | wc -l)
+	out=$(env PKGBE_TEST_FAIL_CLONE=1 pkg upgrade -fy "$PKGNAME" 2>&1)
+	check "clone failure: reported" 'echo "$out" | grep -q "could not create boot environment"' \
+	    'echo "$out" | grep pkg-be'
+	check "clone failure: snapshot removed" 'echo "$out" | grep -q "removed snapshot"' \
+	    'echo "$out" | grep pkg-be'
+	check "clone failure: no snapshot left" '[ "$(nsnap)" -eq '"$s0"' ]' \
+	    'echo "snapshots: want $s0, got $(nsnap):"; zfs list -H -t snapshot -o name -r "$ROOTDS"'
+	check "clone failure: no BE" '[ "$(ours | wc -l)" -eq '"$before"' ]'
+	check "clone failure: pkg still succeeded" '[ "$(pkg query %n "$PKGNAME")" = "$PKGNAME" ]'
+	# Same test build, no failure: normal path still makes a BE.
+	out=$(pkg upgrade -fy "$PKGNAME" 2>&1)
+	check "test build, no failure: BE made" '[ "$(ours | wc -l)" -eq $((before + 1)) ]' \
+	    'echo "$out" | grep pkg-be'
+	cat "$SO_BAK" > "$SO"; rm -f "$SO_BAK"; SO_BAK=""
+else
+	echo "FAIL - could not build the PKGBE_TESTING plugin"; fail=1
+fi
+rm -rf "$TB"
+
+# 33) Partial clone: libbe clones the BE root, then fails on a child
+#      dataset and leaves the root clone behind. Real failure, no test
+#      build: a child of the running BE whose name fits (219 bytes, and
+#      its snapshot name) but not under a BE named with a 40-character
+#      prefix (ZFS names are at most 255 bytes).
+BEDS=$(zfs list -H -o name /)
+LONGC=$(printf 'c%.0s' $(seq 200)); LONGP=$(printf 'p%.0s' $(seq 40))
+CHILD=$BEDS/$LONGC
+if zfs create -o canmount=off "$CHILD"; then
+	printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$LONGP" > "$CONF"
+	s0=$(nsnap); b0=$(bectl list -H | wc -l)
+	out=$(pkg upgrade -fy "$PKGNAME" 2>&1)
+	check "partial clone: failure reported" 'echo "$out" | grep -q "could not create boot environment"' \
+	    'echo "pkg-be did not fail; the case was not exercised:"; echo "$out" | grep pkg-be'
+	check "partial clone: partial BE removed" 'echo "$out" | grep -q "removed the partial boot environment"' \
+	    'echo "$out" | grep pkg-be'
+	check "partial clone: no dataset left" '! zfs list -H -o name -d1 "$ROOTDS" | grep -q "/$LONGP"' \
+	    'echo "left behind:"; zfs list -H -o name -r "$ROOTDS" | grep "$LONGP"'
+	check "partial clone: snapshot removed" 'echo "$out" | grep -q "removed snapshot"' \
+	    'echo "$out" | grep pkg-be'
+	check "partial clone: no snapshot left" '[ "$(nsnap)" -eq '"$s0"' ]' \
+	    'echo "snapshots: want $s0, got $(nsnap):"; zfs list -H -t snapshot -o name -r "$ROOTDS" | cut -c1-80'
+	check "partial clone: BE count unchanged" '[ "$(bectl list -H | wc -l)" -eq '"$b0"' ]'
+	for d in $(zfs list -H -o name -d1 "$ROOTDS" | grep "/$LONGP"); do zfs destroy -r "$d"; done
+	zfs destroy -r "$CHILD"
+else
+	echo "FAIL - could not create $CHILD"; fail=1
+fi
+
+# 34) Pruning still removes the origin snapshot (the snapshot name is
+#     libbe's own, as with be_create()).
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 1;\n' "$PREFIX" > "$CONF"
+pkg upgrade -fy "$PKGNAME" >/dev/null
+pkg upgrade -fy "$PKGNAME" >/dev/null
+check "BE_KEEP=1: one BE" '[ "$(ours | wc -l)" -eq 1 ]' 'ours'
+check "BE_KEEP=1: one origin snapshot for it" '[ "$(nsnap)" -eq $((NSNAP0 + 1)) ]' \
+    'echo "want $((NSNAP0 + 1)) (before the test + the kept BE), got:"; zfs list -H -t snapshot -o name -r "$ROOTDS"'
+
+# 35) A negative BE_KEEP_DAYS does not suggest a negative BE_KEEP_AGE.
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 100;\nBE_KEEP_DAYS = -5;\n' "$PREFIX" > "$CONF"
+out=$(pkg be list 2>&1)
+check "BE_KEEP_DAYS=-5: removal warned" 'echo "$out" | grep -q "BE_KEEP_DAYS was removed"'
+check "BE_KEEP_DAYS=-5: no \"-5d\" advice" '! echo "$out" | grep -q -- "-5d"' 'echo "$out" | head -2'
+
+# 36) Rollback without a terminal refuses, with a reason; "n" on a
+#     terminal says so. The next boot BE does not change.
+printf 'BE_PREFIX = "%s";\nBE_KEEP = 0;\n' "$PREFIX" > "$CONF"
+last=$(ours | tail -1)
+nb=$(bectl list -H | awk '$2 ~ /R/ {print $1}')
+rc=0; out=$(pkg be rollback "$last" < /dev/null 2>&1) || rc=$?
+check "rollback, no terminal: exit 64" '[ $rc -eq 64 ]' 'echo "got $rc; output: $out"'
+check "rollback, no terminal: says why" 'echo "$out" | grep -q "no terminal.*use -y"' 'echo "$out"'
+check "rollback, no terminal: next boot unchanged" '[ "$(bectl list -H | awk "\$2 ~ /R/ {print \$1}")" = "$nb" ]'
+out=$(echo n | script -q /dev/null pkg be rollback "$last" 2>&1 || true)
+check "rollback, answer n: says not activated" 'echo "$out" | grep -q "not activated"' 'echo "$out"'
+check "rollback, answer n: next boot unchanged" '[ "$(bectl list -H | awk "\$2 ~ /R/ {print \$1}")" = "$nb" ]'
+
+# 37) Diff works on a BE that is already mounted, and leaves it mounted.
+MNTBE=$last; m=$(mktemp -d -t pkgbe-mnt)
+bectl mount "$MNTBE" "$m" >/dev/null
+rc=0; out=$(pkg be diff "$MNTBE" 2>&1) || rc=$?
+check "diff on mounted BE: exit 0" '[ $rc -eq 0 ]' 'echo "got $rc: $out"'
+check "diff on mounted BE: still mounted" 'mount -p | awk "{print \$2}" | grep -qx "$m"'
+bectl umount "$MNTBE"; MNTBE=""; rmdir "$m" 2>/dev/null || true
+
+# 38) List shows the status column.
+out=$(pkg be list)
+check "list: STATUS header" 'echo "$out" | head -1 | grep -q STATUS' 'echo "$out" | head -1'
+check "list: complete shown" 'echo "$out" | grep "^$last " | grep -q complete' 'echo "$out" | grep "^$last "'
+
+# 39) Pkg's database on a dataset outside the BE -> warning; the BE is
+#     still made. A copy of the database on its own dataset, via -o PKG_DBDIR.
+DBDS=$ROOTDS; DBDS=${DBDS%%/*}/pkgbe-itest-db
+zfs create -o mountpoint=/var/db/pkgbe-itest-db "$DBDS"
+cp -Rp /var/db/pkg/. /var/db/pkgbe-itest-db/
+before=$(ours | wc -l)
+out=$(pkg -o PKG_DBDIR=/var/db/pkgbe-itest-db upgrade -fy "$PKGNAME" 2>&1)
+check "dbdir outside BE: warned" 'echo "$out" | grep -q "/var/db/pkgbe-itest-db is on $DBDS, outside"' \
+    'echo "$out" | grep pkg-be'
+check "dbdir outside BE: BE still made" '[ "$(ours | wc -l)" -eq $((before + 1)) ]'
+zfs destroy -r "$DBDS"; DBDS=""
+out=$(pkg upgrade -fy "$PKGNAME" 2>&1)
+check "default layout: no dataset warning" '! echo "$out" | grep -q "outside the boot environment"' \
+    'echo "$out" | grep pkg-be'
 
 [ $fail -eq 0 ] && echo "PASS" || echo "FAILED"
 exit $fail

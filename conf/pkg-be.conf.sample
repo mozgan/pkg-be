@@ -8,7 +8,6 @@ BE_KEEP = 5;
 BE_HOOKS = "upgrade";
 # Also destroy pkg-be BEs older than this (0 = off). The newest is kept.
 # Duration: <n>[s|m|h|d|w], e.g. "30d", "2w"; no suffix = seconds.
-# BE_KEEP_DAYS = N (old form) still works; BE_KEEP_AGE wins if not 0.
 BE_KEEP_AGE = "0";
 # Never destroy BEs younger than this, whatever BE_KEEP says (0 = off).
 BE_MIN_AGE = "0";

@@ -15,7 +15,7 @@
 #include "be_compat.h"
 
 #define PLUGIN_NAME	"pkg-be"
-#define PLUGIN_VERSION	"0.2.0"
+#define PLUGIN_VERSION	"0.3.0"
 #define PROP_NS		"pkg-be:"
 #define ZFS_CMD		"/sbin/zfs"
 #ifndef PKG_CMD
@@ -34,6 +34,7 @@ struct pkgbe_conf {
 	bool		 syslog;	/* BE_SYSLOG and pkg.conf SYSLOG */
 	const char	*hooks;
 	const char	*repos;		/* BE_REPOSITORIES, "" = all */
+	int		 old_days;	/* old BE_KEEP_DAYS, to warn */
 };
 
 /* Entry points looked up by pkg(8) with dlsym(3). */

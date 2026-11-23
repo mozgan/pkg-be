@@ -320,6 +320,10 @@ pkgbe_parse_props(const char *text, const char *root,
 			free(r->op);
 			if ((r->op = strdup(val)) == NULL)
 				goto fail;
+		} else if (strcmp(prop, "pkg-be:status") == 0) {
+			free(r->status);
+			if ((r->status = strdup(val)) == NULL)
+				goto fail;
 		} else if (strcmp(prop, "pkg-be:packages") == 0) {
 			free(r->packages);
 			if ((r->packages = strdup(val)) == NULL)
@@ -345,6 +349,7 @@ pkgbe_free_recs(struct pkgbe_rec *recs, size_t n)
 		free(recs[i].name);
 		free(recs[i].op);
 		free(recs[i].packages);
+		free(recs[i].status);
 	}
 	free(recs);
 }
@@ -635,4 +640,34 @@ pkgbe_repo_listed(const char *filter, const char *repo)
 		s += len;
 	}
 	return (empty);
+}
+
+/* ---- BE_PREFIX and dataset checks ---- */
+
+bool
+pkgbe_prefix_valid(const char *prefix)
+{
+	size_t len;
+
+	if (prefix == NULL || (len = strlen(prefix)) == 0 || len > 64)
+		return (false);
+	if (!isalnum((unsigned char)prefix[0]))
+		return (false);
+	for (size_t i = 0; i < len; i++)
+		if (!isalnum((unsigned char)prefix[i]) &&
+		    strchr("._-", prefix[i]) == NULL)
+			return (false);
+	return (true);
+}
+
+bool
+pkgbe_ds_inside(const char *ds, const char *be)
+{
+	size_t bl;
+
+	if (ds == NULL || be == NULL || *be == '\0')
+		return (false);
+	bl = strlen(be);
+	return (strncmp(ds, be, bl) == 0 &&
+	    (ds[bl] == '\0' || ds[bl] == '/'));
 }

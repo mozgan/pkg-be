@@ -1,9 +1,11 @@
 # pkg-be
 
-pkg(8) plugin: creates a ZFS boot environment (**be**) before `pkg upgrade` and keeps
-only the newest `BE_KEEP` of them.
+pkg(8) plugin: creates a ZFS boot environment (**be**) before pkg changes
+the system, and keeps only the newest `BE_KEEP` of them. By default it acts
+on `pkg upgrade`; `BE_HOOKS` adds `pkg install`, `pkg delete` and
+`pkg autoremove`.
 
-Status: v0.2.0.
+Status: v0.3.0.
 
 ## Build / install (FreeBSD)
 
@@ -18,6 +20,7 @@ Status: v0.2.0.
 
     BE_ENABLED = true;      # on/off
     BE_PREFIX  = "pkg-be";  # BE name prefix; only these are ever pruned
+                            #   A-Z a-z 0-9 . _ -, max 64, starts alnum
     BE_KEEP    = 5;         # keep newest N (0 = keep all)
     BE_HOOKS   = "upgrade"; # also: install, deinstall, autoremove, all, none
     BE_KEEP_AGE  = "0";     # also destroy BEs older than this, e.g. "30d" (0 = off)
@@ -27,8 +30,15 @@ Status: v0.2.0.
     BE_MIN_FREE  = 10;      # warn below N% free in the pool (0 = off)
     BE_SYSLOG    = true;    # also log to syslog (off if pkg.conf SYSLOG = false)
 
-Durations: `<n>[s|m|h|d|w]`, no suffix = seconds. `BE_KEEP_DAYS = N`
-(v0.1) still works. An invalid duration disables pruning, never creation.
+Durations: `<n>[s|m|h|d|w]`, no suffix = seconds. An invalid duration
+disables pruning, never creation. `BE_KEEP_DAYS` (v0.1) was removed in
+v0.3.0: it is ignored with a warning; use `BE_KEEP_AGE = "Nd"`.
+
+One pkg command makes at most one BE (e.g. `pkg upgrade --autoremove`).
+`pkg install` that upgrades packages counts as `install`, not `upgrade`.
+pkg-be warns if `/var/db/pkg` or `/usr/local` is on a dataset outside the
+BE: a rollback would not restore them. `pkg be rollback` needs `-y`
+when there is no terminal to ask on.
 
 ## pkg be
 
@@ -43,7 +53,8 @@ Durations: `<n>[s|m|h|d|w]`, no suffix = seconds. `BE_KEEP_DAYS = N`
 ## Metadata
 
 Each BE gets ZFS user properties `pkg-be:op`, `pkg-be:packages`,
-`pkg-be:count`, `pkg-be:version`:
+`pkg-be:count`, `pkg-be:version`, `pkg-be:status` (`complete` if pkg
+finished, `incomplete` if it failed or was interrupted):
 
     zfs get pkg-be:op,pkg-be:packages zroot/ROOT/pkg-be-20261110-123807
 
@@ -69,6 +80,8 @@ and that system boots from ZFS. In these cases pkg-be creates nothing:
 | `pkg-static`                                                | Statically linked pkg, used for recovery.                                                               | It cannot load shared-object plugins; pkg disables plugins in it.                                                                                                                                                                |
 | `BE_ENABLED = false`, or the operation is not in `BE_HOOKS` | Normal operation.                                                                                       | Turned off by configuration.                                                                                                                                                                                                     |
 | No package from `BE_REPOSITORIES`                           | Normal operation.                                                                                       | Filtered out by configuration; pkg-be says so.                                                                                                                                                                                   |
+| `pkg add FILE`, `pkg register`                              | Installs or records a package without pkg's job system.                                                 | pkg calls no plugin hook for them.                                                                                                                                                                                               |
+| `pkg unregister` (deinstall hooks on)                       | Removes package records, not files.                                                                     | Not a case of doing nothing: pkg runs the deinstall hooks, so a BE is made. pkg-be cannot tell it from `pkg delete`.                                                                                                             |
 | Nothing to do (e.g. system up to date)                      | No jobs.                                                                                                | pkg only calls the hook when there is work.                         
 
 ## Author
@@ -78,4 +91,5 @@ Mehmet Ozgan <mozgan@gmail.com>
 ## Related
 
 pkg-autoupgrade also creates BEs, but only for its periodic auto-upgrade
-command; pkg-be hooks every interactive `pkg upgrade`.
+command; pkg-be hooks every `pkg upgrade` (and, with `BE_HOOKS`, install,
+delete and autoremove), interactive or not.

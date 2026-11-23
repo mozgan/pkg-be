@@ -190,8 +190,8 @@ ATF_TC_BODY(prune_seq_order, tc)
 	ATF_CHECK(contains(out, n, "pkg-be-20261110-123807-9"));
 }
 
-ATF_TC_WITHOUT_HEAD(prune_keep_days);
-ATF_TC_BODY(prune_keep_days, tc)
+ATF_TC_WITHOUT_HEAD(prune_keep_age_rule);
+ATF_TC_BODY(prune_keep_age_rule, tc)
 {
 	const char *names[] = {
 		"pkg-be-20261020-120000",	/* 21 days before T0: old */
@@ -215,8 +215,8 @@ ATF_TC_BODY(prune_keep_days, tc)
 	ATF_CHECK_EQ(3, n);
 }
 
-ATF_TC_WITHOUT_HEAD(prune_keep_days_never_newest);
-ATF_TC_BODY(prune_keep_days_never_newest, tc)
+ATF_TC_WITHOUT_HEAD(prune_keep_age_never_newest);
+ATF_TC_BODY(prune_keep_age_never_newest, tc)
 {
 	/* Even if every BE is old, the newest one stays. */
 	const char *names[] = {
@@ -317,6 +317,8 @@ ATF_TC_BODY(props_parse, tc)
 	    "zroot/ROOT/pkg-be-20261110-123807\tpkg-be:count\t2\n"
 	    "zroot/ROOT/pkg-be-20261110-123807\tpkg-be:packages\t"
 	    "tmux 3.5->3.5a, +vim-9.1\n"
+	    "zroot/ROOT/pkg-be-20261110-123807\tpkg-be:status\tcomplete\n"
+	    "zroot/ROOT/default\tpkg-be:status\t-\n"
 	    "zroot/ROOT/old\tcreation\t1600000000\n"
 	    "zroot/ROOT/default/child\tcreation\t1\n"
 	    "zroot/other/x\tcreation\t1\n"
@@ -336,6 +338,11 @@ ATF_TC_BODY(props_parse, tc)
 	ATF_CHECK_STREQ("upgrade", r[2].op);
 	ATF_CHECK_EQ(2, r[2].count);
 	ATF_CHECK_STREQ("tmux 3.5->3.5a, +vim-9.1", r[2].packages);
+	ATF_CHECK_STREQ("complete", r[2].status);
+	ATF_CHECK_MSG(r[1].status == NULL, "\"-\" must mean unset, got %s",
+	    r[1].status ? r[1].status : "(null)");
+	ATF_CHECK_MSG(r[0].status == NULL, "no status line (pkg-be < 0.3.0) "
+	    "must mean unset");
 	pkgbe_free_recs(r, n);
 }
 
@@ -787,8 +794,78 @@ ATF_TC_BODY(prune_min_age_with_active, tc)
 		ATF_CHECK_STREQ("pkg-be-20261102-000000", out[0]);
 }
 
+/* ---- pkgbe_prefix_valid / pkgbe_ds_inside ---- */
+
+#define A16	"aaaaaaaaaaaaaaaa"
+
+ATF_TC_WITHOUT_HEAD(prefix_valid);
+ATF_TC_BODY(prefix_valid, tc)
+{
+	static const struct {
+		const char *in;
+		bool want;
+		const char *why;
+	} t[] = {
+		{ "pkg-be", true, "default" },
+		{ "a", true, "one character" },
+		{ "Be_1.x-2", true, "all allowed classes" },
+		{ "0abc", true, "may start with a digit" },
+		{ A16 A16 A16 A16, true, "64 characters, the limit" },
+		{ A16 A16 A16 A16 "a", false, "65 characters" },
+		{ "", false, "empty" },
+		{ "bad/name", false, "slash: libbe lets it through" },
+		{ "/abs", false, "leading slash" },
+		{ "a b", false, "space" },
+		{ "a@b", false, "@ is the snapshot separator" },
+		{ "-x", false, "leading dash" },
+		{ ".x", false, "leading dot" },
+		{ "_x", false, "leading underscore" },
+		{ "a:b", false, "colon" },
+		{ "a%b", false, "percent" },
+		{ "\xc3\xa7", false, "non-ASCII" },
+	};
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++)
+		ATF_CHECK_MSG(pkgbe_prefix_valid(t[i].in) == t[i].want,
+		    "\"%s\" (%s): got %s, want %s", t[i].in, t[i].why,
+		    t[i].want ? "invalid" : "valid",
+		    t[i].want ? "valid" : "invalid");
+	ATF_CHECK_MSG(!pkgbe_prefix_valid(NULL), "NULL must be invalid");
+}
+
+ATF_TC_WITHOUT_HEAD(ds_inside);
+ATF_TC_BODY(ds_inside, tc)
+{
+	static const struct {
+		const char *ds, *be;
+		bool want;
+		const char *why;
+	} t[] = {
+		{ "zroot/ROOT/default", "zroot/ROOT/default", true, "same" },
+		{ "zroot/ROOT/default/usr", "zroot/ROOT/default", true,
+		    "child" },
+		{ "zroot/ROOT/default2", "zroot/ROOT/default", false,
+		    "sibling with the same start" },
+		{ "zroot/usr/local", "zroot/ROOT/default", false, "elsewhere" },
+		{ "zroot/ROOT", "zroot/ROOT/default", false, "parent" },
+		{ "zroot/ROOT/default@snap", "zroot/ROOT/default", false,
+		    "snapshot name" },
+		{ "x", "", false, "empty BE" },
+	};
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++)
+		ATF_CHECK_MSG(pkgbe_ds_inside(t[i].ds, t[i].be) == t[i].want,
+		    "%s in %s (%s): got %s, want %s", t[i].ds, t[i].be,
+		    t[i].why, t[i].want ? "outside" : "inside",
+		    t[i].want ? "inside" : "outside");
+	ATF_CHECK(!pkgbe_ds_inside(NULL, "a"));
+	ATF_CHECK(!pkgbe_ds_inside("a", NULL));
+}
+
 ATF_TP_ADD_TCS(tp)
 {
+	ATF_TP_ADD_TC(tp, prefix_valid);
+	ATF_TP_ADD_TC(tp, ds_inside);
 	ATF_TP_ADD_TC(tp, duration_valid);
 	ATF_TP_ADD_TC(tp, duration_invalid);
 	ATF_TP_ADD_TC(tp, repo_listed);
@@ -799,8 +876,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, prune_min_age_alone_prunes_nothing);
 	ATF_TP_ADD_TC(tp, prune_future_be_kept);
 	ATF_TP_ADD_TC(tp, prune_min_age_with_active);
-	ATF_TP_ADD_TC(tp, prune_keep_days);
-	ATF_TP_ADD_TC(tp, prune_keep_days_never_newest);
+	ATF_TP_ADD_TC(tp, prune_keep_age_rule);
+	ATF_TP_ADD_TC(tp, prune_keep_age_never_newest);
 	ATF_TP_ADD_TC(tp, name_time);
 	ATF_TP_ADD_TC(tp, join_all_fit);
 	ATF_TP_ADD_TC(tp, join_empty);

@@ -71,12 +71,27 @@ Steps:
 What it checks: creation; metadata; BE_KEEP; foreign BEs kept;
 BE_ENABLED=false; `-n`; BE_HOOKS install/upgrade/deinstall; `pkg be
 list/show/diff/prune`; `pkg -r DIR` skipped; jail skipped; syslog;
-BE_KEEP_DAYS; BE_MIN_FREE warning; `pkg be diff A B`; v0.2.0:
+BE_MIN_FREE warning; `pkg be diff A B`; v0.2.0:
 pkg.conf `SYSLOG=false`, syslog ident; BE_REPOSITORIES (match, near
 misses, wrong case, `local`, delete uses the installed package's
 repository); BE_KEEP_AGE; BE_MIN_AGE (and the same case without it);
 invalid durations create but never prune, `pkg be prune` exits 78;
 unquoted durations are dropped by pkg.
+
+v0.3.0: BE_KEEP_DAYS removal warning (also for a negative value);
+pkg-be:status complete / incomplete (failure provoked with an immutable
+directory); one BE for `pkg upgrade --autoremove`; `PKG_RESTARTED`
+(simulated with the variable, not a real pkg self-upgrade); a file
+conflict found after fetch (pkg's "One more solver iteration") gives one
+BE (local HTTP repository, needs python3); invalid BE_PREFIX values (no
+BE, no snapshot left); a clone failure after the snapshot removes the
+snapshot (test build `make PKGBE_TESTING=1`, made by the test itself;
+the installed plugin is restored); a partial clone (libbe clones the BE
+root, then a child dataset fails on the 255-byte ZFS name limit) is
+removed with its snapshot; the origin snapshot is still removed on
+prune; `pkg be rollback` without a terminal and with "n"; `pkg be diff`
+on a mounted BE; STATUS column in `pkg be list`; pkg database on a
+dataset outside the BE (copy on its own dataset, `-o PKG_DBDIR`).
 
 Failed checks print what was expected and what happened.
 
