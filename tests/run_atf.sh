@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
+# Copyright (c) 2026 M. Ozgan <mozgan@gmail.com>
 # SPDX-License-Identifier: BSD-2-Clause
 #
 # Run every test case of an ATF-C program directly, without kyua.

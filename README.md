@@ -86,7 +86,7 @@ and that system boots from ZFS. In these cases pkg-be creates nothing:
 
 ## Author
 
-Mehmet Ozgan <mozgan@gmail.com>
+M. Ozgan <mozgan@gmail.com>
 
 ## Related
 

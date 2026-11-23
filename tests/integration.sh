@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
+# Copyright (c) 2026 M. Ozgan <mozgan@gmail.com>
 # SPDX-License-Identifier: BSD-2-Clause
 # Integration test for pkg-be on a live ZFS system. Needs root.
 # It force-reinstalls one small package 3 times and checks that

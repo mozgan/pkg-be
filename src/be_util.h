@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
+ * Copyright (c) 2026 M. Ozgan <mozgan@gmail.com>
  *
  * Pure helpers (no libbe/libpkg calls) so they can be unit tested.
  */

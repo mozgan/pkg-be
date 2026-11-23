@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2026 Mehmet Ozgan <mozgan@gmail.com>
+ * Copyright (c) 2026 M. Ozgan <mozgan@gmail.com>
  *
  * pkg-be: create a ZFS boot environment before pkg operations.
  * This file holds the pkg(8) plugin entry points and the hooks.
